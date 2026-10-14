@@ -1,0 +1,97 @@
+name: Reusable Google Play release
+on:
+  workflow_call:
+    inputs:
+      operation:
+        type: string
+        default: prepare
+      tooling_ref:
+        type: string
+        required: true
+      sdk_packages:
+        type: string
+        default: 'platforms;android-36 build-tools;35.0.0 ndk;28.2.13676358 cmake;3.22.1'
+    secrets:
+      PLAY_KEYSTORE_BASE64:
+        required: true
+      PLAY_STORE_PASSWORD:
+        required: true
+      PLAY_KEY_ALIAS:
+        required: true
+      PLAY_KEY_PASSWORD:
+        required: true
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPERATION: ${{ inputs.operation }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hojin-v/google-play-release
+          ref: ${{ inputs.tooling_ref }}
+          path: .play-tooling
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install configured Android toolchain
+        env:
+          SDK_PACKAGES: ${{ inputs.sdk_packages }}
+        run: |
+          read -r -a packages <<< "$SDK_PACKAGES"
+          sdkmanager "${packages[@]}"
+      - name: Restore upload signing key
+        env:
+          PLAY_KEYSTORE_BASE64: ${{ secrets.PLAY_KEYSTORE_BASE64 }}
+          PLAY_STORE_PASSWORD: ${{ secrets.PLAY_STORE_PASSWORD }}
+          PLAY_KEY_ALIAS: ${{ secrets.PLAY_KEY_ALIAS }}
+          PLAY_KEY_PASSWORD: ${{ secrets.PLAY_KEY_PASSWORD }}
+        run: |
+          case "$OPERATION" in prepare|sync_listing|draft) ;; *) exit 1 ;; esac
+          test -n "$PLAY_KEYSTORE_BASE64" && test -n "$PLAY_STORE_PASSWORD" && test -n "$PLAY_KEY_ALIAS" && test -n "$PLAY_KEY_PASSWORD"
+          printf '%s' "$PLAY_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/play-upload.jks"
+          chmod 600 "$RUNNER_TEMP/play-upload.jks"
+          echo "PLAY_KEYSTORE_FILE=$RUNNER_TEMP/play-upload.jks" >> "$GITHUB_ENV"
+      - name: Build and audit the signed release
+        env:
+          PLAY_STORE_PASSWORD: ${{ secrets.PLAY_STORE_PASSWORD }}
+          PLAY_KEY_ALIAS: ${{ secrets.PLAY_KEY_ALIAS }}
+          PLAY_KEY_PASSWORD: ${{ secrets.PLAY_KEY_PASSWORD }}
+        run: .play-tooling/bin/play-release --project "$GITHUB_WORKSPACE" prepare
+      - name: Save validated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: play-release
+          path: build/play-release/
+          if-no-files-found: error
+      - uses: ruby/setup-ruby@v1
+        if: inputs.operation != 'prepare'
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: .play-tooling
+      - name: Save listing or upload an internal draft
+        if: inputs.operation != 'prepare'
+        env:
+          PLAY_CREDENTIALS: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          test -n "$PLAY_CREDENTIALS"
+          printf '%s' "$PLAY_CREDENTIALS" > "$RUNNER_TEMP/play-service-account.json"
+          chmod 600 "$RUNNER_TEMP/play-service-account.json"
+          export PLAY_SERVICE_ACCOUNT_JSON="$RUNNER_TEMP/play-service-account.json"
+          .play-tooling/bin/play-fastlane --project "$GITHUB_WORKSPACE" --test-client
+          aab="$(python3 -c 'import json; print(json.load(open("play/release.json"))["bundle_path"])')"
+          .play-tooling/bin/play-fastlane --project "$GITHUB_WORKSPACE" android "$OPERATION" "aab:$aab"
+      - name: Remove temporary credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/play-upload.jks" "$RUNNER_TEMP/play-service-account.json"

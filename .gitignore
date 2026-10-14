@@ -1,0 +1,9 @@
+/build/
+/.bundle/
+/vendor/
+/fastlane/report.xml
+/fastlane/README.md
+**/__pycache__/
+*.jks
+*.keystore
+*service-account*.json

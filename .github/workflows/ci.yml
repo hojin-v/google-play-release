@@ -1,0 +1,23 @@
+name: Automation checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit and recording tests
+        run: |
+          python3 -m unittest discover -s skills/google-play-release/scripts -p 'test_*.py'
+          python3 -m unittest discover -s tools -p 'test_*.py'
+          bash -n bin/play-release bin/play-fastlane tools/capture_play_screenshots.sh
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Play commit policy tests
+        run: bundle exec ruby fastlane/test_play_client.rb

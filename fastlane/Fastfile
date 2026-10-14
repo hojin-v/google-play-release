@@ -1,0 +1,109 @@
+require "json"
+require "shellwords"
+require "googleauth"
+require "google/apis/androidpublisher_v3"
+require_relative "play_client"
+opt_out_usage
+
+default_platform(:android)
+TOOL_ROOT = File.expand_path("..", __dir__)
+ROOT = File.expand_path(ENV.fetch("PLAY_PROJECT_ROOT", Dir.pwd))
+CONFIG = JSON.parse(File.read(File.join(ROOT, "play/release.json")))
+
+def play_credentials(bootstrap: true)
+  if bootstrap && !CONFIG["bootstrap_complete"]
+    UI.user_error!("Finish Console app creation and first manual AAB upload; then set bootstrap_complete in play/release.json")
+  end
+  path = ENV.fetch("PLAY_SERVICE_ACCOUNT_JSON")
+  UI.user_error!("PLAY_SERVICE_ACCOUNT_JSON must be an existing credential file path") unless File.file?(path)
+  path
+end
+
+def audit_play_release(aab)
+  JSON.parse(sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/release.py"), "--project", ROOT,
+                "check", "--aab", aab, "--store", log: false))
+end
+
+def upload_play_release(**options)
+  Dir.chdir(ROOT) do
+    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, options)
+    uploader = PlayReleaseUploader.new
+    uploader.contact_email = CONFIG.fetch("contact_email")
+    uploader.perform_upload
+  end
+end
+
+platform :android do
+  desc "Check service account authentication and package access without uploading"
+  lane :verify_access do
+    File.open(play_credentials(bootstrap: false)) do |file|
+      credentials = Google::Auth::ServiceAccountCredentials.make_creds(
+        json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher")
+      credentials.fetch_access_token!
+      UI.success("Service account OAuth authentication succeeded")
+      service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
+      service.authorization = credentials
+      begin
+        service.list_application_device_tier_configs(CONFIG.fetch("package_name"), page_size: 1)
+        UI.success("Publisher API package read succeeded (upload/track permissions still apply)")
+      rescue Google::Apis::Error => error
+        message = JSON.parse(error.body.to_s).dig("error", "message") rescue error.message
+        UI.user_error!("Publisher API HTTP #{error.status_code}: #{message}. Check API enablement, first AAB upload and Play app permissions.")
+      end
+    end
+  end
+
+  desc "Upload validated AAB and listing as an internal draft"
+  lane :draft do |options|
+    credentials = play_credentials
+    aab = File.expand_path(options.fetch(:aab), ROOT)
+    audit_play_release(aab)
+    upload_play_release(
+      package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
+      skip_upload_apk: true,
+      metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+      track: "internal", release_status: "draft",
+      changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
+      sync_image_upload: true
+    )
+  end
+
+  desc "Sync listing for a manually uploaded release, without uploading its AAB again"
+  lane :sync_listing do |options|
+    credentials = play_credentials
+    aab = File.expand_path(options.fetch(:aab), ROOT)
+    code = audit_play_release(aab).fetch("version_code")
+    track = options.fetch(:track, "internal")
+    codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: track)
+    UI.user_error!("Save the manually uploaded release on the requested track first") unless codes.map(&:to_i).include?(code)
+    upload_play_release(
+      package_name: CONFIG.fetch("package_name"), json_key: credentials,
+      track: track, version_code: code,
+      skip_upload_aab: true, skip_upload_apk: true,
+      metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+      changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
+      sync_image_upload: true
+    )
+  end
+
+  desc "Promote a tested version code, without rebuilding or uploading it"
+  lane :promote do |options|
+    credentials = play_credentials
+    code = Integer(options.fetch(:version_code))
+    from = options.fetch(:from, "internal")
+    to = options.fetch(:to, "production")
+    fraction = Float(options.fetch(:rollout, to == "production" ? "0.1" : "1.0"))
+    UI.user_error!("Source and destination tracks must differ") if from == to
+    UI.user_error!("rollout must be greater than 0 and at most 1") unless fraction > 0 && fraction <= 1
+    codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: from)
+    UI.user_error!("Requested version is not on source track") unless codes.map(&:to_i).include?(code)
+    upload_to_play_store(
+      package_name: CONFIG.fetch("package_name"), json_key: credentials,
+      track: from, track_promote_to: to, version_code: code,
+      release_status: fraction < 1 ? "inProgress" : "completed", rollout: fraction,
+      skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: true,
+      skip_upload_images: true, skip_upload_screenshots: true, skip_upload_changelogs: true,
+      rescue_changes_not_sent_for_review: false
+    )
+  end
+end

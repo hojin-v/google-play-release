@@ -1,0 +1,4 @@
+interface:
+  display_name: "Google Play Release"
+  short_description: "Prepare, validate and automate Google Play app releases"
+  default_prompt: "Use $google-play-release to prepare and validate this Android app's next Play release."
