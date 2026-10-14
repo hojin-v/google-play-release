@@ -247,10 +247,11 @@ def main():
             # Android encoder timing can differ from host-wall time on emulators. Keep
             # action timing in evidence.json; do not mislabel video scenes with that clock.
             (a.output/'captions.srt').write_text(subtitles([{'start': 0, 'end': seconds,
-                'caption': c.get('video_caption', c['name'])}], c['scope']))
+                'caption': c.get('video_caption', c['name'])}],
+                'Android emulator' if emulator else 'Physical Android device'))
             fonts = Path.home()/'.local/share/fonts'
             subprocess.run([a.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', 'raw.mp4',
-                            '-vf', f"subtitles=captions.srt:fontsdir={fonts}:force_style='FontName=Malgun Gothic,FontSize=15,Outline=2,MarginV=15'",
+                            '-vf', f"pad=iw:ih+220:0:0:color=black,subtitles=captions.srt:fontsdir={fonts}:force_style='FontName=Malgun Gothic,FontSize=6,Outline=0.5,MarginV=5'",
                             '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
                             '-movflags', '+faststart', 'captioned.mp4'], cwd=a.output, check=True)
             report['captioned_sha256'] = hashlib.sha256((a.output/'captioned.mp4').read_bytes()).hexdigest()
