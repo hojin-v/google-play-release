@@ -235,14 +235,27 @@ def main():
         (a.output/'evidence.json').write_text(json.dumps(report, ensure_ascii=False, indent=2)+'\n')
     if (a.output/'raw.mp4').is_file():
         report['raw_sha256'] = hashlib.sha256((a.output/'raw.mp4').read_bytes()).hexdigest()
-        (a.output/'captions.srt').write_text(subtitles(r.events, c['scope']))
         if Path(a.ffmpeg).is_file():
+            probe = subprocess.run([a.ffmpeg, '-hide_banner', '-i', str(a.output/'raw.mp4')],
+                                   capture_output=True, text=True)
+            duration = re.search(r'Duration: (\d+):(\d+):([\d.]+)', probe.stderr)
+            if not duration:
+                raise CaptureError('Recorded MP4 duration could not be read')
+            seconds = int(duration[1])*3600 + int(duration[2])*60 + float(duration[3])
+            report['video_duration_seconds'] = seconds
+            report['captions_mode'] = 'scope throughout actual media duration'
+            # Android encoder timing can differ from host-wall time on emulators. Keep
+            # action timing in evidence.json; do not mislabel video scenes with that clock.
+            (a.output/'captions.srt').write_text(subtitles([{'start': 0, 'end': seconds,
+                'caption': c.get('video_caption', c['name'])}], c['scope']))
             fonts = Path.home()/'.local/share/fonts'
             subprocess.run([a.ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-i', 'raw.mp4',
                             '-vf', f"subtitles=captions.srt:fontsdir={fonts}:force_style='FontName=Malgun Gothic,FontSize=15,Outline=2,MarginV=15'",
                             '-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-pix_fmt', 'yuv420p',
                             '-movflags', '+faststart', 'captioned.mp4'], cwd=a.output, check=True)
             report['captioned_sha256'] = hashlib.sha256((a.output/'captioned.mp4').read_bytes()).hexdigest()
+        else:
+            report['captioning'] = 'FFmpeg unavailable; raw video and action evidence preserved'
         (a.output/'evidence.json').write_text(json.dumps(report, ensure_ascii=False, indent=2)+'\n')
     print(a.output, flush=True)
     if report['status'] != 'passed':
