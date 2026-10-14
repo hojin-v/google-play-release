@@ -43,7 +43,10 @@ jobs:
           java-version: '17'
           distribution: temurin
           cache: gradle
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Install configured Android toolchain
         env:
           SDK_PACKAGES: ${{ inputs.sdk_packages }}
