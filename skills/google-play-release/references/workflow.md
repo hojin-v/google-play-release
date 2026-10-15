@@ -29,6 +29,7 @@
 
 ## 반복 배포 자동화
 
+- 앱별 선언 사실은 `bin/play-declarations --project <app> questions --json`으로 확인한다. 사용자에게 새로 필요한 사실만 설명·선택지와 함께 소량씩 질문하고, 답변은 `answer --id ... --value ... --source user|code|console`으로 기록한다. 터미널에서는 `interview`가 질문·저장·재개를 수행한다. 다른 앱의 응답은 복사하지 않으며 미정 값은 자동 선택하지 않는다. 조건에 따라 데이터·계정 삭제·건강·금융·정부·접근·FGS 후속 질문이 생긴다. 프로덕션 승격은 `status --require-complete`를 통과해야 하지만 실제 Console 설문·IARC·심사 완료 여부는 별도로 확인한다. 기능·SDK·운영이 달라지면 저장한 사실도 갱신한다.
 - 릴리스 설정: `<project>/play/release.json`; 스토어 원본: `fastlane/metadata/android/<locale>/`; 선언·심사 안내: `play/`.
 - 최초 업로드 키는 `python3 skills/google-play-release/scripts/create_upload_key.py --output-dir /absolute/private/app-upload --developer DeveloperName`으로 저장소 밖에 생성한다. 이미 있는 키는 회전하거나 덮어쓰지 않는다. 생성한 `signing.json`을 `PLAY_SIGNING_CONFIG` 또는 `prepare --signing-config ...`으로 지정한다. CI는 기존 서명 Secrets를 사용한다. 이 명령은 Play 앱 서명 키를 선택하지 않는다.
 - `python3 skills/google-play-release/scripts/release.py prepare`로 빌드·단위 테스트·lint·AAB 감사를 한 번에 실행한다. 기본값은 로컬 준비이며 업로드하지 않는다.

@@ -14,7 +14,7 @@ jobs:
         run: |
           python3 -m unittest discover -s skills/google-play-release/scripts -p 'test_*.py'
           python3 -m unittest discover -s tools -p 'test_*.py'
-          bash -n bin/play-release bin/play-fastlane tools/capture_play_screenshots.sh
+          bash -n bin/play-release bin/play-fastlane bin/play-declarations tools/capture_play_screenshots.sh
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'

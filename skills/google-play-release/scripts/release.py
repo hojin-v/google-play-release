@@ -276,7 +276,7 @@ def main():
         submission.mkdir()
         # Credential files may be gitignored in play/. Never include them in upload artifacts.
         for p in (root / "play").iterdir():
-            if p.is_file() and (p.suffix in (".md", ".html") or p.name in ("release.json", "video-scenario.json")):
+            if p.is_file() and (p.suffix in (".md", ".html") or p.name in ("release.json", "video-scenario.json", "declarations.json")):
                 shutil.copy2(p, submission / p.name)
         (out / "AndroidManifest.xml").write_text(xml)
         (out / "audit.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")

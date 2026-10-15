@@ -21,6 +21,22 @@ Python 3.11+, JDK 17, the Android SDK and the project's Gradle wrapper are requi
 
 For the first app, create it and save its first AAB in Play Console before API uploads. A draft is not a published test or production release. The [skill](skills/google-play-release/SKILL.md) and [workflow](skills/google-play-release/references/workflow.md) describe the full process.
 
+## App-specific declaration questions
+
+```bash
+google-play-release/bin/play-declarations --project ./your-app interview
+# For an agent/UI: render the pending titles, guidance and choices, then record the reply.
+google-play-release/bin/play-declarations --project ./your-app questions --json
+google-play-release/bin/play-declarations --project ./your-app answer --id pricing --value free --source user
+google-play-release/bin/play-declarations --project ./your-app status --json
+```
+
+The guided terminal interview has no default answers. It saves each explicit response in the app's `play/declarations.json`, retains skipped questions, resumes after interruption, and asks conditional follow-ups for data handling, accounts, restricted access, regulated features and foreground services. `answer --file /path/to/answers.json --source console` accepts a JSON object mapping question IDs to verified values; a batch is validated before saving. Sources distinguish user decisions, operator input, code inspection and actual Console values. Package checks prevent accidentally reusing another app's answers. Countries, pricing and target audience cannot be decided from code.
+
+Production `promote` runs `status --require-complete` before accessing Play. Missing facts stop promotion so the caller can collect answers; internal draft preparation remains available. Promotions use the same commit policy that refuses to cancel an existing review. Facts must be revisited when an app's features, SDKs or service operation change.
+
+An agent should ask only for facts it cannot establish from this app's existing instructions or evidence, using the available interactive user-input tool. These questions do not submit forms or replace the current Console questionnaires, IARC rating, SDK/data audit, account testing requirements or policy review. No credentials belong in the answer file. Conditional features can require additional Console questions or evidence beyond these initial facts.
+
 ## Real Android video automation
 
 Connect and authorize an unlocked test device, install the exact APK to demonstrate, and supply an app-specific JSON scenario. The runner uses actual app/system UI controls, records on the device, verifies foreground service start/stop through `dumpsys`, and produces `raw.mp4`, `captioned.mp4`, `captions.srt`, screenshots and `evidence.json`.
