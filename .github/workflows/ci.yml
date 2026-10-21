@@ -14,7 +14,12 @@ jobs:
         run: |
           python3 -m unittest discover -s skills/google-play-release/scripts -p 'test_*.py'
           python3 -m unittest discover -s tools -p 'test_*.py'
-          bash -n bin/play-release bin/play-fastlane bin/play-declarations tools/capture_play_screenshots.sh
+          bash -n bin/play-release bin/play-fastlane bin/play-declarations bin/play-screenshots tools/capture_play_screenshots.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check browser capture script
+        run: node --check skills/google-play-release/scripts/screenshots.cjs
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'

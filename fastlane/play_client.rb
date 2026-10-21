@@ -27,11 +27,39 @@ class PlayReleaseClient < Supply::Client
     end
     self.current_edit = nil
     self.current_package_name = nil
-    FastlaneCore::UI.success("Play listing and contact email saved")
+    FastlaneCore::UI.success("Play changes and contact email saved (approval/publication are separate)")
   rescue Google::Apis::Error => error
     message = JSON.parse(error.body.to_s).dig("error", "message") rescue error.message
     raise error.class.new("Google Play HTTP #{error.status_code}: #{message}",
                           status_code: error.status_code, body: error.body)
+  end
+end
+
+# Read committed track/artifact/image state and always discard the temporary read edit.
+# A completed track release is not evidence of review approval or public availability.
+class PlayReleaseSnapshot
+  def self.read(service, package)
+    edit = service.insert_edit(package)
+    begin
+      tracks = (service.list_edit_tracks(package, edit.id).tracks || []).map do |track|
+        {track: track.track, releases: (track.releases || []).map { |r|
+          {name: r.name, version_codes: r.version_codes, status: r.status, user_fraction: r.user_fraction}
+        }}
+      end
+      bundles = (service.list_edit_bundles(package, edit.id).bundles || []).map { |b|
+        {version_code: b.version_code, sha256: b.sha256}
+      }
+      countries = service.get_edit_countryavailability(package, edit.id, "production")
+      images = (service.list_edit_listings(package, edit.id).listings || []).to_h do |listing|
+        entries = service.list_edit_images(package, edit.id, listing.language, "phoneScreenshots").images || []
+        [listing.language, entries.map { |image| {id: image.id, sha256: image.sha256, url: image.url} }]
+      end
+      {package_name: package, tracks: tracks, bundles: bundles, phone_screenshots: images,
+       countries: (countries.countries || []).map(&:country_code), rest_of_world: countries.rest_of_world,
+       note: "Committed API state; review approval and public availability require separate verification"}
+    ensure
+      service.delete_edit(package, edit.id)
+    end
   end
 end
 

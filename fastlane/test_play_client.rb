@@ -64,3 +64,34 @@ check(client.current_edit.nil?, "Clear the edit after confirmed success")
   end
 end
 puts "3 Play commit policy cases passed"
+
+require "ostruct"
+class SnapshotPublisher
+  attr_reader :deleted
+  def initialize(fail_read: false) = @fail_read = fail_read
+  def insert_edit(*) = OpenStruct.new(id: "read-edit")
+  def delete_edit(_, id) = @deleted = id
+  def list_edit_tracks(*)
+    raise "read failed" if @fail_read
+    OpenStruct.new(tracks: [OpenStruct.new(track: "production", releases: [OpenStruct.new(name: "1.2.3", version_codes: ["51"], status: "completed")])])
+  end
+  def list_edit_bundles(*) = OpenStruct.new(bundles: [OpenStruct.new(version_code: 51, sha256: "aab-hash")])
+  def get_edit_countryavailability(*) = OpenStruct.new(countries: [OpenStruct.new(country_code: "KR")], rest_of_world: true)
+  def list_edit_listings(*) = OpenStruct.new(listings: [OpenStruct.new(language: "ko-KR")])
+  def list_edit_images(*) = OpenStruct.new(images: [OpenStruct.new(id: "first", sha256: "hash-1"), OpenStruct.new(id: "second", sha256: "hash-2")])
+end
+publisher = SnapshotPublisher.new
+snapshot = PlayReleaseSnapshot.read(publisher, "com.example.app")
+check(snapshot[:bundles].first[:sha256] == "aab-hash", "Read uploaded artifact hashes")
+check(snapshot[:phone_screenshots]["ko-KR"].map { |i| i[:sha256] } == ["hash-1", "hash-2"], "Preserve remote screenshot order")
+check(snapshot[:rest_of_world] && snapshot[:countries] == ["KR"], "Preserve remote country availability")
+check(publisher.deleted == "read-edit", "Discard temporary read edit")
+publisher = SnapshotPublisher.new(fail_read: true)
+begin
+  PlayReleaseSnapshot.read(publisher, "com.example.app")
+  raise "Read errors must propagate"
+rescue RuntimeError => error
+  check(error.message == "read failed", "Keep original read error")
+  check(publisher.deleted == "read-edit", "Discard edit even after a failed read")
+end
+puts "2 remote snapshot cases passed"

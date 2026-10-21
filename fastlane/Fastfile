@@ -34,6 +34,22 @@ def upload_play_release(**options)
 end
 
 platform :android do
+  desc "Read committed tracks, AAB hashes, screenshot order and countries; does not commit changes"
+  lane :status do |options|
+    File.open(play_credentials) do |file|
+      credentials = Google::Auth::ServiceAccountCredentials.make_creds(
+        json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher")
+      service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
+      service.authorization = credentials
+      snapshot = PlayReleaseSnapshot.read(service, CONFIG.fetch("package_name"))
+      output = File.expand_path(options.fetch(:output, "build/play-remote-status.json"), ROOT)
+      FileUtils.mkdir_p(File.dirname(output))
+      File.write(output, JSON.pretty_generate(snapshot) + "\n")
+      UI.success("Remote Play snapshot saved: #{output}")
+      snapshot[:tracks].each { |track| UI.message("#{track[:track]}: #{track[:releases]}") }
+    end
+  end
+
   desc "Check service account authentication and package access without uploading"
   lane :verify_access do
     File.open(play_credentials(bootstrap: false)) do |file|
@@ -64,6 +80,24 @@ platform :android do
       metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
       track: "internal", release_status: "draft",
       changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
+      sync_image_upload: true
+    )
+  end
+
+  desc "Explicit production update: upload the validated AAB and listing in one edit"
+  lane :release do |options|
+    credentials = play_credentials
+    aab = File.expand_path(options.fetch(:aab), ROOT)
+    fraction = Float(options.fetch(:rollout, "0.1"))
+    UI.user_error!("rollout must be greater than 0 and at most 1") unless fraction > 0 && fraction <= 1
+    audit_play_release(aab)
+    sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
+       "--project", ROOT, "status", "--require-complete")
+    upload_play_release(
+      package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
+      skip_upload_apk: true, metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+      track: "production", release_status: fraction < 1 ? "inProgress" : "completed", rollout: fraction,
+      changes_not_sent_for_review: false, rescue_changes_not_sent_for_review: false,
       sync_image_upload: true
     )
   end

@@ -131,6 +131,12 @@ def png_info(path):
 
 def store_issues(root, config, version_code):
     issues = []
+    if config.get("screenshot_config"):
+        from screenshots import check as check_screenshots
+        try:
+            issues += check_screenshots(root)
+        except (OSError, ValueError, KeyError) as error:
+            issues.append(f"Store screenshot configuration invalid: {error}")
     if not config.get("developer_name", "").strip():
         issues.append("developer_name missing")
     if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", config.get("contact_email", "")):
@@ -174,7 +180,7 @@ def store_issues(root, config, version_code):
                 issues.append(f"{locale.name}/icon: requires 32-bit RGBA PNG <= 1 MB")
         screenshots = sorted((locale / "images/phoneScreenshots").glob("*.png"))
         if not 2 <= len(screenshots) <= 8:
-            issues.append(f"{locale.name}: requires 2–8 actual phone screenshots")
+            issues.append(f"{locale.name}: requires 2–8 phone screenshots/store previews")
         for p in screenshots:
             w, h, depth, _, alpha, _ = png_info(p)
             if min(w, h) < 320 or max(w, h) > 3840 or max(w, h) > 2 * min(w, h) or alpha or depth != 8:
@@ -246,7 +252,9 @@ def main():
             os.environ.update({key: signing[key] for key in keys})
         for command in config.get("preparation_commands", []):
             run(command, root)
-        run([str(root / "gradlew"), "--no-daemon"] + config["gradle_tasks"], root)
+        if config.get("screenshot_config"):
+            run([sys.executable, str(Path(__file__).with_name("screenshots.py")), "--project", str(root), "generate"], root)
+        run([str(root / "gradlew"), "--no-daemon"] + config.get("gradle_args", []) + config["gradle_tasks"], root)
         aab = root / config["bundle_path"]
     else:
         aab = args.aab.resolve()
@@ -276,7 +284,7 @@ def main():
         submission.mkdir()
         # Credential files may be gitignored in play/. Never include them in upload artifacts.
         for p in (root / "play").iterdir():
-            if p.is_file() and (p.suffix in (".md", ".html") or p.name in ("release.json", "video-scenario.json", "declarations.json")):
+            if p.is_file() and (p.suffix in (".md", ".html") or p.name in ("release.json", "video-scenario.json", "declarations.json", "screenshots.json", "screenshot-manifest.json")):
                 shutil.copy2(p, submission / p.name)
         (out / "AndroidManifest.xml").write_text(xml)
         (out / "audit.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")

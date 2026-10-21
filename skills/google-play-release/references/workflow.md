@@ -1,6 +1,6 @@
 # 반복 가능한 Google Play 배포
 
-확인 기준일: 2026-10-14. 다음 배포에서는 아래 공식 문서와 해당 계정 Console의 요구사항을 다시 확인한다.
+확인 기준일: 2026-10-22. 다음 배포에서는 아래 공식 문서와 해당 계정 Console의 요구사항을 다시 확인한다.
 
 ## 산출물과 처리 순서
 
@@ -9,7 +9,7 @@
 | 1 | 고정 applicationId, 증가하는 versionCode, versionName, 변경 내역 | 결정 | versionCode 증가; 업로드된 코드는 재사용 불가 |
 | 2 | Play 전용 서명 AAB, SHA-256, 서명 인증서, 최종 manifest, 네이티브 검사 | 생성 | 매번 자동 생성·검사 |
 | 3 | 제목(30자), 짧은 설명(80자), 상세 설명(4000자), 문의 이메일 | 작성 | 기능·수집 내용 변경 시 갱신 |
-| 4 | 아이콘 512×512, feature graphic 1024×500, 실제 앱 스크린샷 최소 2장 | 생성 | UI 변경 시 갱신 |
+| 4 | 아이콘 512×512, feature graphic 1024×500, 현재 앱 경험을 보여 주는 이미지 최소 2장 | 생성 | UI 변경 시 갱신·순서/해시 확인 |
 | 5 | 공개 개인정보처리방침 URL 및 앱 안의 방침, 데이터 보안 답변 | 공개·신고 | 데이터 흐름 변경 시 재검토 |
 | 6 | 앱 액세스, 광고, 대상 연령, IARC, 민감 권한/FGS 신고 및 필요한 영상 | Console 입력 | 신고 내용 변경 시 갱신 |
 | 7 | 내부 테스트 릴리스, 실제 기기 결과, pre-launch report | Console/API | 자동 업로드 + 결과 확인 |
@@ -17,6 +17,8 @@
 | 9 | 심사 제출, 승인, 출시, Android vitals 확인 | Console | 테스트한 동일 versionCode 승격 |
 
 스크린샷은 JPEG 또는 alpha 없는 PNG, 320~3840px, 긴 변이 짧은 변의 2배 이내. 1080×1920 또는 1080×2160 캡처를 사용한다. Feature graphic은 alpha 없는 PNG/JPEG. 아이콘은 32-bit PNG, 1 MB 이하. 영상은 필요한 권한의 실제 사용자 시작·진행·종료를 보여 주고 심사자가 열 수 있는 링크로 제공한다. 그림이나 모의 화면을 실기기 성공 증거로 사용하지 않는다.
+
+실제 기기 캡처는 `tools/capture_play_screenshots.sh`를 사용한다. 사용자가 HTML 기반 스토어 이미지를 명시적으로 선택했다면 앱 소유 미리보기와 `play/screenshots.json`을 `screenshot_config`로 연결한다. `npm ci`와 `npx playwright install chromium` 후 `bin/play-screenshots --project <app> generate`로 장면을 생성하고 전부 검수한다. 선택자·기기 프리셋·장면 순서·예시 표시는 앱 설정에 둔다. 결과는 1080×1920 RGB PNG와 원본/설정 지문·이미지 순서/해시가 있는 manifest이며, 실제 기기 검증으로 기록하지 않는다. 시스템 UI를 재현한 이미지는 사용 예시라고 표시한다. `prepare`가 생성하고 `check --store`가 최신 상태를 검사하므로 소스가 바뀐 오래된 이미지를 그대로 업로드하지 않는다.
 
 ## 최초 Console 설정
 
@@ -40,7 +42,9 @@
 - `bundle exec fastlane android verify_access`: OAuth와 실제 앱 패키지 조회를 구분해 검사한다. 키 인증 성공만으로 앱 권한·업로드 준비 완료를 판단하지 않는다.
 - 첫 수동 업로드로 이미 등록한 AAB를 다시 `draft`로 올리지 않는다. `bundle exec fastlane android sync_listing aab:/absolute/app.aab`으로 기존 트랙 버전의 문구·이미지·출시 노트만 동기화한다. 이 lane은 AAB를 재업로드하거나 출시 상태·rollout을 변경하지 않는다.
 - `bundle exec fastlane android draft aab:/absolute/app.aab`: 내부 트랙 draft와 등록정보 업로드. draft는 테스트 사용자 배포나 심사 제출이 완료됐다는 의미가 아니다. Console에서 신고를 마친 뒤 테스트 릴리스를 게시한다.
+- `bundle exec fastlane android release aab:/absolute/app.aab rollout:1.0`: 명시적으로 요청된 정식 업데이트를 검증된 AAB·등록정보·이미지와 함께 하나의 edit에서 프로덕션 100% 출시로 제출한다. 먼저 선언 사실을 검사하며 진행 중 심사를 취소하지 않는다. 내부 준비만 요청받았을 때 실행하지 않는다. 이미지와 AAB를 서로 다른 edit로 제출해 먼저 시작된 이미지 심사와 충돌하는 경로를 피할 수 있다.
 - `bundle exec fastlane android promote version_code:NN from:internal to:production rollout:0.1`: 테스트한 특정 코드를 10% 프로덕션 출시로 승격. 사용자의 실제 출시 요청과 계정의 프로덕션 접근이 있을 때 실행한다. 동일 AAB를 다시 빌드하거나 업로드하지 않는다.
+- `bundle exec fastlane android status output:build/play-status.json`: 임시 edit에서 트랙·AAB 해시·언어별 이미지 순서/해시·국가를 조회하고 edit를 폐기한다. 변경 전후 및 오류 후에 실행해 중복 업로드를 피한다. API의 `completed`와 공개·심사 승인은 구분한다.
 - 업로드 오류 또는 네트워크 끊김 뒤에는 Console/트랙 버전을 먼저 확인한다. 성공 여부가 불명확한 업로드·commit을 무한 재시도하지 않는다. 수정 릴리스는 새 versionCode로 배포한다. 이전 versionCode를 낮춰 롤백할 수 없다.
 
 ## 최신 요건을 확인할 공식 출처

@@ -15,9 +15,25 @@ export PLAY_SERVICE_ACCOUNT_JSON=/private/service-account.json
 google-play-release/bin/play-fastlane --project ./your-app android verify_access
 google-play-release/bin/play-fastlane --project ./your-app android sync_listing aab:build/release.aab
 google-play-release/bin/play-fastlane --project ./your-app android draft aab:build/release.aab
+# Only after an explicit production release request:
+google-play-release/bin/play-fastlane --project ./your-app android release aab:build/release.aab rollout:1.0
+google-play-release/bin/play-fastlane --project ./your-app android status output:build/play-status.json
 ```
 
 Python 3.11+, JDK 17, the Android SDK and the project's Gradle wrapper are required. Fastlane additionally needs Ruby/Bundler (`bundle install` in this repository). `PLAY_RUBY_ROOT` supports an existing portable local Ruby runtime. Signing and service account files stay outside Git.
+
+## Store preview automation
+
+Device screenshots remain supported by `tools/capture_play_screenshots.sh`. For an explicitly chosen HTML preview workflow, set `screenshot_config` in the app's release JSON to a project-owned scene configuration. It names the self-contained preview page, locale, device description, source files, capture selector, control actions and 2–8 ordered PNG filenames. Keep app-specific markup, device presets and illustrative system UI labels in the app repository.
+
+```bash
+npm ci --prefix google-play-release
+(cd google-play-release && npx playwright install chromium)
+google-play-release/bin/play-screenshots --project ./your-app generate
+google-play-release/bin/play-screenshots --project ./your-app check
+```
+
+The generator captures the entire selected frame, converts it to opaque 1080×1920 RGB PNG, and records source fingerprints and ordered image hashes in the configured manifest. `prepare` regenerates the images; store audits reject stale or changed images and extra old screenshots. Raw captures remain under the app's ignored `build/play-captures/` for visual review. `PLAY_CHROMIUM_EXECUTABLE` can select an existing compatible local Chromium. Browser previews are not real-device validation. Use explicit example labels for reconstructed system settings or notifications.
 
 For the first app, create it and save its first AAB in Play Console before API uploads. A draft is not a published test or production release. The [skill](skills/google-play-release/SKILL.md) and [workflow](skills/google-play-release/references/workflow.md) describe the full process.
 
@@ -56,4 +72,4 @@ The current built-in recorder has no audio. It can prove actual UI/FGS lifecycle
 
 ## CI and deployment
 
-This repository's CI runs tooling tests without an Android account. App repositories check out a pinned tooling commit in their manually triggered Play workflow and supply their own Secrets. `prepare` builds artifacts; `draft` uploads an internal draft. Production promotion is a separate explicit action after testing and declarations. Public tooling code does not require public app source or credentials.
+This repository's CI runs tooling tests without an Android account. App repositories check out a pinned tooling commit in their manually triggered Play workflow and supply their own Secrets. `prepare` builds artifacts; `draft` uploads an internal draft. Explicit `release` submits a new validated production AAB and listing together, while `promote` reuses an existing internal version without rebuilding. Both use an explicit rollout fraction and require completed app facts. Remote snapshots run before and after mutations, including upload errors. Neither a successful API commit nor a completed track proves review approval/public availability. Public tooling code does not require public app source or credentials.

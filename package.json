@@ -1,0 +1,7 @@
+{
+  "name": "google-play-release-tooling",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Optional browser capture for project-owned store preview pages",
+  "dependencies": { "playwright": "1.61.0" }
+}
