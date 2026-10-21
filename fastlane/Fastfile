@@ -88,15 +88,14 @@ platform :android do
   lane :release do |options|
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
-    fraction = Float(options.fetch(:rollout, "0.1"))
-    UI.user_error!("rollout must be greater than 0 and at most 1") unless fraction > 0 && fraction <= 1
+    rollout = PlayReleaseRollout.options(options.fetch(:rollout, "0.1"))
     audit_play_release(aab)
     sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
        "--project", ROOT, "status", "--require-complete")
     upload_play_release(
       package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
       skip_upload_apk: true, metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
-      track: "production", release_status: fraction < 1 ? "inProgress" : "completed", rollout: fraction,
+      track: "production", **rollout,
       changes_not_sent_for_review: false, rescue_changes_not_sent_for_review: false,
       sync_image_upload: true
     )
@@ -125,9 +124,8 @@ platform :android do
     code = Integer(options.fetch(:version_code))
     from = options.fetch(:from, "internal")
     to = options.fetch(:to, "production")
-    fraction = Float(options.fetch(:rollout, to == "production" ? "0.1" : "1.0"))
+    rollout = PlayReleaseRollout.options(options.fetch(:rollout, to == "production" ? "0.1" : "1.0"))
     UI.user_error!("Source and destination tracks must differ") if from == to
-    UI.user_error!("rollout must be greater than 0 and at most 1") unless fraction > 0 && fraction <= 1
     if to == "production"
       sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
          "--project", ROOT, "status", "--require-complete")
@@ -138,7 +136,7 @@ platform :android do
     upload_play_release(
       package_name: CONFIG.fetch("package_name"), json_key: credentials,
       track: from, track_promote_to: to, version_code: code,
-      release_status: fraction < 1 ? "inProgress" : "completed", rollout: fraction,
+      **rollout,
       skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: true,
       skip_upload_images: true, skip_upload_screenshots: true, skip_upload_changelogs: true,
       rescue_changes_not_sent_for_review: false

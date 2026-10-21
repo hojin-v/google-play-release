@@ -95,3 +95,20 @@ rescue RuntimeError => error
   check(publisher.deleted == "read-edit", "Discard edit even after a failed read")
 end
 puts "2 remote snapshot cases passed"
+
+[["0.1", "inProgress"], ["1.0", "completed"]].each do |fraction, status|
+  options = PlayReleaseRollout.options(fraction)
+  configuration = FastlaneCore::Configuration.create(Supply::Options.available_options,
+    {package_name: "com.example.app", **options})
+  check(configuration[:rollout] == fraction, "Supply requires rollout as a string")
+  check(configuration[:release_status] == status, "Choose the matching release status")
+end
+["0", "-0.1", "1.1", "NaN", "Infinity", "bad"].each do |fraction|
+  begin
+    PlayReleaseRollout.options(fraction)
+    raise "An invalid rollout must fail before accessing Play"
+  rescue ArgumentError
+    # No API call has been made.
+  end
+end
+puts "8 rollout configuration cases passed"

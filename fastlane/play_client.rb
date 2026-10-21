@@ -1,5 +1,14 @@
 require "supply"
 
+class PlayReleaseRollout
+  def self.options(value)
+    fraction = Float(value)
+    raise ArgumentError, "rollout must be greater than 0 and at most 1" unless fraction > 0 && fraction <= 1
+    # Supply validates its configuration before converting this string to the API fraction.
+    {release_status: fraction < 1 ? "inProgress" : "completed", rollout: fraction.to_s}
+  end
+end
+
 # Use the pinned supply uploader, with app contact details and an explicit commit policy.
 class PlayReleaseClient < Supply::Client
   attr_accessor :contact_email, :edit_status_path
