@@ -1,4 +1,5 @@
 require "json"
+require "digest"
 require "shellwords"
 require "googleauth"
 require "google/apis/androidpublisher_v3"
@@ -41,13 +42,53 @@ platform :android do
         json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher")
       service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
       service.authorization = credentials
-      snapshot = PlayReleaseSnapshot.read(service, CONFIG.fetch("package_name"))
+      snapshot = nil
+      receipt_path = File.join(ROOT, "build/play-edit-status.json")
+      if File.file?(receipt_path)
+        receipt = JSON.parse(File.read(receipt_path))
+        if receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
+          begin
+            service.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
+            snapshot = PlayReleaseSnapshot.read_existing(service, CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
+          rescue Google::Apis::ClientError => error
+            raise unless PlayReleaseSnapshot.invalid_edit?(error)
+          end
+        end
+      end
+      snapshot ||= PlayReleaseSnapshot.read(service, CONFIG.fetch("package_name"))
       output = File.expand_path(options.fetch(:output, "build/play-remote-status.json"), ROOT)
       FileUtils.mkdir_p(File.dirname(output))
       File.write(output, JSON.pretty_generate(snapshot) + "\n")
       UI.success("Remote Play snapshot saved: #{output}")
       snapshot[:tracks].each { |track| UI.message("#{track[:track]}: #{track[:releases]}") }
     end
+  end
+
+  desc "Revalidate and commit an existing production edit after a permission/network failure; never reupload"
+  lane :resume do |options|
+    credentials = play_credentials
+    aab = File.expand_path(options.fetch(:aab), ROOT)
+    audit = audit_play_release(aab)
+    rollout = PlayReleaseRollout.options(options.fetch(:rollout, "0.1"))
+    sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
+       "--project", ROOT, "status", "--require-complete")
+    receipt_path = File.join(ROOT, "build/play-edit-status.json")
+    receipt = JSON.parse(File.read(receipt_path))
+    UI.user_error!("No matching uncommitted edit receipt") unless receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
+    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options,
+      {package_name: CONFIG.fetch("package_name"), json_key: credentials, changes_not_sent_for_review: false})
+    client = PlayReleaseClient.make_from_config
+    edit = client.client.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
+    snapshot = PlayReleaseSnapshot.read_existing(client.client, CONFIG.fetch("package_name"), edit.id)
+    images = Dir.glob(File.join(ROOT, CONFIG.fetch("metadata_path"), "*", "images/phoneScreenshots")).to_h do |directory|
+      [File.basename(File.dirname(File.dirname(directory))), Dir.glob(File.join(directory, "*.png")).sort.map { |file| Digest::SHA256.file(file).hexdigest }]
+    end
+    PlayReleaseResume.validate(snapshot, CONFIG.fetch("package_name"), audit.fetch("version_code"), audit.fetch("aab_sha256"), images, rollout)
+    client.current_package_name = CONFIG.fetch("package_name")
+    client.current_edit = edit
+    client.contact_email = CONFIG.fetch("contact_email")
+    client.edit_status_path = receipt_path
+    client.commit_current_edit!
   end
 
   desc "Check service account authentication and package access without uploading"

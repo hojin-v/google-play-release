@@ -13,6 +13,7 @@ class FakePublisher
   end
 
   def get_edit_detail(*) = @details
+  def insert_edit(*) = Google::Apis::AndroidpublisherV3::AppEdit.new(id: "new-upload-edit")
   def update_edit_detail(_, _, details) = @details = details
 
   def commit_edit(_, _, **options)
@@ -112,3 +113,40 @@ end
   end
 end
 puts "8 rollout configuration cases passed"
+
+publisher = SnapshotPublisher.new
+staged = PlayReleaseSnapshot.read_existing(publisher, "com.example.app", "kept-edit")
+check(publisher.deleted.nil?, "Reading a failed edit must preserve it for resumption")
+check(staged[:state] == "uncommitted-edit", "Never report staged changes as committed")
+expected_images = {"ko-KR" => ["hash-1", "hash-2"]}
+rollout = PlayReleaseRollout.options("1.0")
+PlayReleaseResume.validate(staged, "com.example.app", 51, "aab-hash", expected_images, rollout)
+[["com.other.app", 51, "aab-hash", expected_images, rollout],
+ ["com.example.app", 52, "aab-hash", expected_images, rollout],
+ ["com.example.app", 51, "wrong-hash", expected_images, rollout],
+ ["com.example.app", 51, "aab-hash", {"ko-KR" => ["hash-2", "hash-1"]}, rollout],
+ ["com.example.app", 51, "aab-hash", expected_images, PlayReleaseRollout.options("0.1")]].each do |arguments|
+  begin
+    PlayReleaseResume.validate(staged, *arguments)
+    raise "Mismatched staged changes must not be committed"
+  rescue ArgumentError
+    # Requires the same validated version, artifact, screenshot order and requested rollout.
+  end
+end
+puts "7 preserved-edit and guarded resumption cases passed"
+check(PlayReleaseSnapshot.invalid_edit?(api_error(400, "This edit has expired, please create a new Edit.")), "Recognize Google's explicit edit expiry")
+check(!PlayReleaseSnapshot.invalid_edit?(api_error(403, "The caller does not have permission")), "Permission errors must preserve the active edit")
+check(!PlayReleaseSnapshot.invalid_edit?(api_error(400, "Invalid request")), "An unrelated validation error must not discard an edit")
+puts "3 edit expiry classification cases passed"
+
+require "tmpdir"
+Dir.mktmpdir do |directory|
+  client = PlayReleaseClient.allocate
+  client.client = FakePublisher.new([])
+  client.edit_status_path = File.join(directory, "receipt.json")
+  client.begin_edit(package_name: "com.example.app")
+  receipt = JSON.parse(File.read(client.edit_status_path))
+  check(receipt == {"package_name" => "com.example.app", "edit_id" => "new-upload-edit", "status" => "uploading"},
+        "Save the edit receipt before any binary/metadata upload can fail")
+end
+puts "1 upload-start receipt case passed"

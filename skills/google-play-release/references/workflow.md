@@ -45,6 +45,7 @@
 - `bundle exec fastlane android release aab:/absolute/app.aab rollout:1.0`: 명시적으로 요청된 정식 업데이트를 검증된 AAB·등록정보·이미지와 함께 하나의 edit에서 프로덕션 100% 출시로 제출한다. 먼저 선언 사실을 검사하며 진행 중 심사를 취소하지 않는다. 내부 준비만 요청받았을 때 실행하지 않는다. 이미지와 AAB를 서로 다른 edit로 제출해 먼저 시작된 이미지 심사와 충돌하는 경로를 피할 수 있다.
 - `bundle exec fastlane android promote version_code:NN from:internal to:production rollout:0.1`: 테스트한 특정 코드를 10% 프로덕션 출시로 승격. 사용자의 실제 출시 요청과 계정의 프로덕션 접근이 있을 때 실행한다. 동일 AAB를 다시 빌드하거나 업로드하지 않는다.
 - `bundle exec fastlane android status output:build/play-status.json`: 임시 edit에서 트랙·AAB 해시·언어별 이미지 순서/해시·국가를 조회하고 edit를 폐기한다. 변경 전후 및 오류 후에 실행해 중복 업로드를 피한다. API의 `completed`와 공개·심사 승인은 구분한다.
+- 저장에 실패한 기존 edit가 있으면 `status`는 그 edit를 유지하며 **uncommitted-edit**라고 구분해 읽는다. 새 edit는 기존 작업을 무효화하므로 임의로 생성하지 않는다. 권한 해결 후 `resume aab:/absolute/app.aab rollout:1.0`이 같은 AAB 버전·해시·프로덕션 상태·이미지 순서를 검사하고 commit만 재시도한다. 만료/삭제를 명시적으로 확인한 경우에만 새 상태를 읽고 버전 사용 여부를 판단한다. CI는 업로드 시작 시부터 기록한 `play-edit-status.json`도 보관한다.
 - 업로드 오류 또는 네트워크 끊김 뒤에는 Console/트랙 버전을 먼저 확인한다. 성공 여부가 불명확한 업로드·commit을 무한 재시도하지 않는다. 수정 릴리스는 새 versionCode로 배포한다. 이전 versionCode를 낮춰 롤백할 수 없다.
 
 ## 최신 요건을 확인할 공식 출처

@@ -140,7 +140,9 @@ jobs:
         if: always() && inputs.operation != 'prepare'
         with:
           name: play-remote-status
-          path: build/play-status-*.json
+          path: |
+            build/play-status-*.json
+            build/play-edit-status.json
           if-no-files-found: warn
       - name: Remove temporary credentials
         if: always()
