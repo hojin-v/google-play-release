@@ -55,15 +55,30 @@ def elf_issues(data):
     size, count = struct.unpack_from(endian + "HH", data, 54)
     issues = []
     loads = 0
+    headers = []
     for i in range(count):
         kind, flags, file_offset, vaddr, _, filesz, memsz, align = struct.unpack_from(
             endian + "IIQQQQQQ", data, offset + i * size)
+        headers.append((kind, flags, vaddr, memsz))
         if kind == 1:
             loads += 1
             if align < 16384 or (vaddr - file_offset) % 16384:
                 issues.append(f"LOAD alignment {align} or offset is incompatible with 16 KB")
-        if kind == 0x6474E552 and (vaddr + memsz) % 16384:
-            issues.append("RELRO end is incompatible with 16 KB")
+    # Android rounds RELRO protection out to page boundaries. An unaligned end
+    # is valid when RELRO occupies its own LOAD and no writable data shares the
+    # rounded pages. See developer.android.com/guide/practices/page-sizes.
+    for kind, _, start, length in headers:
+        if kind != 0x6474E552 or not length:
+            continue
+        end = start + length
+        page_start, page_end = start & ~16383, (end + 16383) & ~16383
+        for load_kind, flags, address, size in headers:
+            if load_kind != 1 or not flags & 2:
+                continue
+            left, right = max(address, page_start), min(address + size, page_end)
+            if left < right and (left < start or right > end):
+                issues.append("16 KB RELRO protection overlaps writable LOAD data")
+                break
     if not loads:
         issues.append("no LOAD segments")
     return issues
