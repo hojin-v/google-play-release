@@ -5,13 +5,17 @@ import xml.etree.ElementTree as ET
 from release import elf_issues, manifest_issues
 
 
-def elf(alignment, relro_end=0x8000):
-    data = bytearray(256)
+def elf(alignment, relro_end=0x8000, trailing_data=0x4000, next_writable=None):
+    data = bytearray(320)
     data[:6] = b"\x7fELF\x02\x01"
     struct.pack_into("<Q", data, 32, 64)
-    struct.pack_into("<HH", data, 54, 56, 2)
+    struct.pack_into("<HH", data, 54, 56, 3 if next_writable is None else 4)
     struct.pack_into("<IIQQQQQQ", data, 64, 1, 5, 0, 0, 0, 128, 128, alignment)
-    struct.pack_into("<IIQQQQQQ", data, 120, 0x6474E552, 4, 0, 0x4000, 0, relro_end - 0x4000, relro_end - 0x4000, 1)
+    size = relro_end - 0x4000
+    struct.pack_into("<IIQQQQQQ", data, 120, 1, 6, 0x4000, 0x4000, 0, size + trailing_data, size + trailing_data, alignment)
+    struct.pack_into("<IIQQQQQQ", data, 176, 0x6474E552, 4, 0x4000, 0x4000, 0, size, size, 1)
+    if next_writable is not None:
+        struct.pack_into("<IIQQQQQQ", data, 232, 1, 6, next_writable, next_writable, 0, 0x1000, 0x1000, alignment)
     return bytes(data)
 
 
@@ -20,6 +24,20 @@ class SubmissionValidation(unittest.TestCase):
         self.assertTrue(elf_issues(elf(4096)))
         self.assertTrue(elf_issues(elf(16384, 0x9000)))
         self.assertEqual([], elf_issues(elf(16384)))
+
+    def test_accepts_relro_only_load_with_an_unaligned_end(self):
+        self.assertEqual([], elf_issues(elf(16384, 0x9000, trailing_data=0)))
+        self.assertEqual([], elf_issues(elf(65536, 0x9000, trailing_data=0, next_writable=0xC000)))
+
+    def test_rejects_writable_data_in_another_load_on_a_protected_page(self):
+        self.assertTrue(elf_issues(elf(16384, 0x9000, trailing_data=0, next_writable=0xA000)))
+
+    def test_rejects_writable_data_before_an_unaligned_relro_start(self):
+        data = bytearray(elf(16384))
+        # RELRO starts inside the writable LOAD's first 16 KB page.
+        struct.pack_into("<Q", data, 176 + 16, 0x4100)
+        struct.pack_into("<Q", data, 176 + 40, 0x3f00)
+        self.assertTrue(elf_issues(bytes(data)))
 
     def test_rejects_wrong_app_and_external_installer(self):
         doc = ET.fromstring('''<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.other.app">
