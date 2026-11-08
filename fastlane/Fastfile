@@ -37,7 +37,8 @@ end
 platform :android do
   desc "Read committed tracks, AAB hashes, screenshot order and countries; does not commit changes"
   lane :status do |options|
-    File.open(play_credentials) do |file|
+    # Inspect the real API even before local bootstrap has been confirmed.
+    File.open(play_credentials(bootstrap: false)) do |file|
       credentials = Google::Auth::ServiceAccountCredentials.make_creds(
         json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher")
       service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
