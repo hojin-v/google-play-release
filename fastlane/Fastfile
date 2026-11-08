@@ -73,14 +73,14 @@ platform :android do
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
     audit = audit_play_release(aab)
-    rollout = PlayReleaseRollout.options(options.fetch(:rollout, "0.1"))
+    rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status])
     sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
        "--project", ROOT, "status", "--require-complete")
     receipt_path = File.join(ROOT, "build/play-edit-status.json")
     receipt = JSON.parse(File.read(receipt_path))
     UI.user_error!("No matching uncommitted edit receipt") unless receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
     Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options,
-      {package_name: CONFIG.fetch("package_name"), json_key: credentials, changes_not_sent_for_review: false})
+      {package_name: CONFIG.fetch("package_name"), json_key: credentials, changes_not_sent_for_review: rollout[:release_status] == "draft"})
     client = PlayReleaseClient.make_from_config
     edit = client.client.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
     snapshot = PlayReleaseSnapshot.read_existing(client.client, CONFIG.fetch("package_name"), edit.id)
@@ -169,7 +169,8 @@ platform :android do
     code = Integer(options.fetch(:version_code))
     from = options.fetch(:from, "internal")
     to = options.fetch(:to, "production")
-    rollout = PlayReleaseRollout.options(options.fetch(:rollout, to == "production" ? "0.1" : "1.0"))
+    rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status],
+                                                  default: to == "production" ? "0.1" : "1.0")
     UI.user_error!("Source and destination tracks must differ") if from == to
     if to == "production"
       sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),

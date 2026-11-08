@@ -1,6 +1,15 @@
 require "supply"
 
 class PlayReleaseRollout
+  def self.promotion_options(value = nil, release_status: nil, default: "0.1")
+    if release_status == "draft"
+      raise ArgumentError, "draft promotion must omit rollout" unless value.nil?
+      return {release_status: "draft", track_promote_release_status: "draft"}
+    end
+    raise ArgumentError, "promotion release_status must be omitted or draft" unless release_status.nil?
+    options(value || default)
+  end
+
   def self.options(value)
     fraction = Float(value)
     raise ArgumentError, "rollout must be greater than 0 and at most 1" unless fraction > 0 && fraction <= 1
