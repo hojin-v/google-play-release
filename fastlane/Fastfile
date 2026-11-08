@@ -63,6 +63,9 @@ platform :android do
       UI.success("Remote Play snapshot saved: #{output}")
       snapshot[:tracks].each { |track| UI.message("#{track[:track]}: #{track[:releases]}") }
     end
+  rescue Google::Apis::Error => error
+    message = JSON.parse(error.body.to_s).dig("error", "message") rescue error.message
+    UI.user_error!("Publisher API HTTP #{error.status_code}: #{message}")
   end
 
   desc "Revalidate and commit an existing production edit after a permission/network failure; never reupload"
