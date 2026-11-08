@@ -150,3 +150,20 @@ Dir.mktmpdir do |directory|
         "Save the edit receipt before any binary/metadata upload can fail")
 end
 puts "1 upload-start receipt case passed"
+
+# Initial Console apps require a saved production draft before their first review.
+draft_options = PlayReleaseRollout.promotion_options(release_status: "draft")
+configuration = FastlaneCore::Configuration.create(Supply::Options.available_options,
+  {package_name: "com.example.app", **draft_options})
+check(configuration[:release_status] == "draft" && configuration[:track_promote_release_status] == "draft",
+      "Both Supply statuses must remain draft; saving a first release must not publish it")
+check(configuration[:rollout].nil?, "Supply forbids rollout fractions for draft promotions")
+check(PlayReleaseRollout.promotion_options("0.2") == PlayReleaseRollout.options("0.2"), "Keep existing production rollout behavior")
+[["1.0", "draft"], [nil, "unknown"]].each do |value, status|
+  begin
+    PlayReleaseRollout.promotion_options(value, release_status: status)
+    raise "Invalid draft/promotion options must fail before remote access"
+  rescue ArgumentError
+  end
+end
+puts "5 initial production draft configuration cases passed"
