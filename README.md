@@ -37,7 +37,7 @@ The generator captures the entire selected frame, converts it to opaque 1080×19
 
 If a commit fails, `build/play-edit-status.json` preserves the existing edit ID from the start of the upload. `status` inspects a still-active edit without opening another one and labels it **uncommitted**. After resolving permissions, `android resume aab:<same-validated-file> rollout:1.0` checks the package, uploaded AAB version/hash, production rollout and ordered screenshot hashes before retrying only the commit. A new edit would invalidate the old one; do not blindly rerun an upload. If Google explicitly reports an expired/deleted edit, read fresh committed state first and establish whether the version code is still available. CI saves the receipt alongside remote status artifacts.
 
-For the first app, create it and save its first AAB in Play Console before API uploads. A draft is not a published test or production release. The [skill](skills/google-play-release/SKILL.md) and [workflow](skills/google-play-release/references/workflow.md) describe the full process.
+`verify_access` and `status` run before local bootstrap is confirmed, so they can establish actual authentication, package permissions and remote track state. Do not infer an API restriction from the local flag alone. For the first app, create it and save its first AAB in Play Console before API uploads when the API reports that the package is not registered. A draft is not a published test or production release. The [skill](skills/google-play-release/SKILL.md) and [workflow](skills/google-play-release/references/workflow.md) describe the full process.
 
 ## App-specific declaration questions
 
