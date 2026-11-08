@@ -17,7 +17,7 @@ def question(key, title, guide, choices=None, *, kind="choice", depends=None, bu
 
 YES_NO = [("no", "없음 / 아니요"), ("yes", "있음 / 예")]
 QUESTIONS = [
-    question("countries", "어느 국가에 배포하나요?", "국가 코드를 쉼표로 입력합니다. 예: KR 또는 KR,US. 첫 앱의 지역을 다른 앱에 복사하지 않습니다.", kind="countries", business=True),
+    question("countries", "어느 국가에 배포하나요?", "국가 코드를 쉼표로 입력합니다. 예: KR 또는 KR,US. 전체 가능 국가는 ALL_AVAILABLE. 선택 의도이며 실제 Console 국가 설정 완료를 의미하지 않습니다. 첫 앱의 지역을 다른 앱에 복사하지 않습니다.", kind="countries", business=True),
     question("pricing", "앱 다운로드 가격은 어떻게 하나요?", "무료 앱은 출시 후 유료 앱으로 전환할 수 없습니다. 인앱 결제 여부는 별도입니다.", [("free", "무료"), ("paid", "유료")], business=True),
     question("target_audience", "어떤 연령대를 대상으로 하나요?", "쉼표로 실제 대상 연령대를 입력합니다: 0-5,6-8,9-12,13-15,16-17,18+. 콘텐츠 등급과 별도이며 아동 대상이면 추가 정책이 적용됩니다.", kind="ages", business=True),
     question("app_type", "앱 유형은 무엇인가요?", "콘텐츠 등급 설문의 카테고리 선택에도 사용합니다. 실제 IARC 등급은 Console 설문 결과로 받아야 합니다.", [("utility", "일반 앱 / 도구"), ("game", "게임 / 베팅"), ("social", "소셜 / 커뮤니케이션")]),
@@ -62,8 +62,8 @@ def normalize(q, value):
         values = list(dict.fromkeys(v.strip() for v in value.split(",")))
         if q["kind"] == "countries":
             values = [v.upper() for v in values]
-            if not all(re.fullmatch(r"[A-Z]{2}", v) for v in values):
-                raise ValueError("countries: 두 글자 국가 코드를 입력하세요")
+            if values != ["ALL_AVAILABLE"] and not all(re.fullmatch(r"[A-Z]{2}", v) for v in values):
+                raise ValueError("countries: 두 글자 국가 코드 또는 단독 ALL_AVAILABLE을 입력하세요")
         elif not set(values) <= AGE_GROUPS:
             raise ValueError("target_audience: 표시된 연령 구간을 사용하세요")
         return list(dict.fromkeys(values))
