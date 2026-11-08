@@ -84,7 +84,8 @@ class PlayReleaseSnapshot
   def self.read_existing(service, package, edit_id)
       tracks = (service.list_edit_tracks(package, edit_id).tracks || []).map do |track|
         {track: track.track, releases: (track.releases || []).map { |r|
-          {name: r.name, version_codes: r.version_codes, status: r.status, user_fraction: r.user_fraction}
+          {name: r.name, version_codes: r.version_codes, status: r.status, user_fraction: r.user_fraction,
+           release_notes: (r.release_notes || []).map { |note| {language: note.language, text: note.text} }}
         }}
       end
       bundles = (service.list_edit_bundles(package, edit_id).bundles || []).map { |b|
