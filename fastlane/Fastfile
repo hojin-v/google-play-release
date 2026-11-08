@@ -13,7 +13,7 @@ CONFIG = JSON.parse(File.read(File.join(ROOT, "play/release.json")))
 
 def play_credentials(bootstrap: true)
   if bootstrap && !CONFIG["bootstrap_complete"]
-    UI.user_error!("Finish Console app creation and first manual AAB upload; then set bootstrap_complete in play/release.json")
+    UI.important("Local bootstrap is unconfirmed; Google Play API will verify actual package/upload readiness. Console-only app signing and legal declarations still apply.")
   end
   path = ENV.fetch("PLAY_SERVICE_ACCOUNT_JSON")
   UI.user_error!("PLAY_SERVICE_ACCOUNT_JSON must be an existing credential file path") unless File.file?(path)
