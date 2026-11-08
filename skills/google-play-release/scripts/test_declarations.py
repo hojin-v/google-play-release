@@ -54,6 +54,16 @@ class DeclarationInterview(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_state(self.root)
 
+    def test_all_available_country_intent_round_trips_without_inventing_country_codes(self):
+        apply_answers(self.state, {"countries": "all_available"}, "user")
+        save_state(self.root, self.state)
+        self.assertEqual(["ALL_AVAILABLE"], load_state(self.root)["answers"]["countries"]["value"])
+        self.assertNotIn("countries", self.keys())
+        with self.assertRaises(ValueError):
+            apply_answers(self.state, {"countries": "ALL_AVAILABLE,KR"}, "user")
+        with self.assertRaises(ValueError):
+            apply_answers(self.state, {"countries": "ALL_AVAILABLE"}, "code")
+
     def test_urls_ages_and_required_answers_are_validated(self):
         for key, value in [("privacy_policy_url", "http://example.com"),
                            ("privacy_policy_url", "https://user:password@example.com"),

@@ -75,3 +75,5 @@ The current built-in recorder has no audio. It can prove actual UI/FGS lifecycle
 ## CI and deployment
 
 This repository's CI runs tooling tests without an Android account. App repositories check out a pinned tooling commit in their manually triggered Play workflow and supply their own Secrets. `prepare` builds artifacts; `draft` uploads an internal draft. Explicit `release` submits a new validated production AAB and listing together, while `promote` reuses an existing internal version without rebuilding. Both use an explicit rollout fraction and require completed app facts. Remote snapshots run before and after mutations, including upload errors. Neither a successful API commit nor a completed track proves review approval/public availability. Public tooling code does not require public app source or credentials.
+
+Country decisions accept explicit CLDR country codes or the single `ALL_AVAILABLE` token. This records the owner's intent without inventing a Console country list; actual country selection must still be verified from the Console/API snapshot.
