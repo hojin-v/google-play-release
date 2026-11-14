@@ -45,6 +45,7 @@ Supply.config = {changes_not_sent_for_review: true}
 hold_error = "Changes are sent for review automatically. The query parameter changesNotSentForReview must not be set."
 publisher = FakePublisher.new([api_error(400, hold_error), nil])
 client = client_for(publisher)
+client.allow_automatic_review = true
 client.commit_current_edit!
 check(publisher.commits.size == 2, "The rejected parameter must cause one commit retry")
 check(publisher.commits.all? { |p| p[:changes_in_review_behavior] == "ERROR_IF_IN_REVIEW" }, "Never cancel an existing review")
@@ -167,3 +168,70 @@ check(PlayReleaseRollout.promotion_options("0.2") == PlayReleaseRollout.options(
   end
 end
 puts "5 initial production draft configuration cases passed"
+
+# A test/draft operation must not silently remove Google's automatic-review hold.
+publisher = FakePublisher.new([api_error(400, hold_error)])
+client = client_for(publisher)
+begin
+  client.commit_current_edit!
+  raise "Automatic review fallback must be opt-in"
+rescue Google::Apis::ClientError
+  check(publisher.commits.size == 1, "Do not silently send draft/listing changes for automatic review")
+  check(!client.current_edit.nil?, "Keep the rejected edit for inspection")
+end
+puts "1 explicit automatic-review consent case passed"
+
+require "json"
+before = PlayReleaseSnapshot.read(SnapshotPublisher.new, "com.example.app")
+rollout = PlayReleaseRollout.options("1.0")
+arguments = {package: "com.example.app", track: "production", code: 51,
+             sha256: "aab-hash", images: {"ko-KR" => ["hash-1", "hash-2"]}, rollout: rollout}
+check(PlayReleaseVerification.validate(before, before, **arguments), "Verify committed release identity")
+mutations = [
+  ->(s) { s[:state] = "uncommitted-edit" },
+  ->(s) { s[:package_name] = "com.other.app" },
+  ->(s) { s[:bundles][0][:sha256] = "wrong" },
+  ->(s) { s[:countries] = ["US"] },
+  ->(s) { s[:rest_of_world] = false },
+  ->(s) { s[:phone_screenshots]["ko-KR"].reverse! },
+  ->(s) { s[:tracks][0][:releases][0][:version_codes] = ["52"] },
+  ->(s) { s[:tracks][0][:releases][0][:status] = "draft" }
+]
+mutations.each do |mutate|
+  after = Marshal.load(Marshal.dump(before))
+  mutate.call(after)
+  begin
+    PlayReleaseVerification.validate(before, after, **arguments)
+    raise "A mismatched remote release must fail verification"
+  rescue ArgumentError
+  end
+end
+puts "9 post-submission identity verification cases passed"
+
+# A new app with no production track can still prepare/read its internal draft.
+class FirstAppPublisher < SnapshotPublisher
+  def list_edit_tracks(*) = OpenStruct.new(tracks: [])
+  def get_edit_countryavailability(*) = raise Google::Apis::ClientError.new("Not found", status_code: 404)
+end
+first = PlayReleaseSnapshot.read(FirstAppPublisher.new, "com.example.first")
+check(first[:countries].nil? && first[:tracks].empty?, "Do not require a production resource just to read a first app")
+puts "1 first-app snapshot case passed"
+
+before_test = Marshal.load(Marshal.dump(before))
+after_test = Marshal.load(Marshal.dump(before))
+after_test[:tracks] << {track: "internal", releases: [{version_codes: ["52"], status: "draft"}]}
+after_test[:bundles] << {version_code: 52, sha256: "test-hash"}
+test_args = arguments.merge(track: "internal", code: 52, sha256: "test-hash", rollout: nil)
+check(PlayReleaseVerification.validate(before_test, after_test, **test_args), "Internal draft preserves production")
+after_test[:tracks][0][:releases][0][:version_codes] = ["52"]
+begin
+  PlayReleaseVerification.validate(before_test, after_test, **test_args)
+  raise "Internal upload must not alter production"
+rescue ArgumentError
+end
+puts "2 internal/production separation cases passed"
+
+internal_stage = Marshal.load(Marshal.dump(staged))
+internal_stage[:tracks] = [{track: "internal", releases: [{version_codes: ["51"], status: "draft"}]}]
+PlayReleaseResume.validate(internal_stage, "com.example.app", 51, "aab-hash", expected_images, {release_status: "draft"}, track: "internal")
+puts "1 guarded internal-draft resumption case passed"

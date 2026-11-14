@@ -20,7 +20,7 @@ end
 
 # Use the pinned supply uploader, with app contact details and an explicit commit policy.
 class PlayReleaseClient < Supply::Client
-  attr_accessor :contact_email, :edit_status_path
+  attr_accessor :contact_email, :edit_status_path, :allow_automatic_review
 
   def begin_edit(package_name: nil)
     super
@@ -48,6 +48,7 @@ class PlayReleaseClient < Supply::Client
       message = JSON.parse(error.body.to_s).dig("error", "message") rescue error.message
       raise unless error.status_code == 400 && message.include?("The query parameter changesNotSentForReview must not be set")
 
+      raise unless allow_automatic_review
       FastlaneCore::UI.important("Google Play requires automatic review for these changes; committing the same edit without the review-hold parameter.")
       client.commit_edit(package, edit_id, changes_in_review_behavior: "ERROR_IF_IN_REVIEW")
     end
@@ -91,27 +92,32 @@ class PlayReleaseSnapshot
       bundles = (service.list_edit_bundles(package, edit_id).bundles || []).map { |b|
         {version_code: b.version_code, sha256: b.sha256}
       }
-      countries = service.get_edit_countryavailability(package, edit_id, "production")
+      begin
+        countries = service.get_edit_countryavailability(package, edit_id, "production")
+      rescue Google::Apis::ClientError => error
+        raise unless error.status_code == 404 && tracks.none? { |t| t[:track] == "production" }
+        countries = nil # A new app can have no production country resource yet.
+      end
       images = (service.list_edit_listings(package, edit_id).listings || []).to_h do |listing|
         entries = service.list_edit_images(package, edit_id, listing.language, "phoneScreenshots").images || []
         [listing.language, entries.map { |image| {id: image.id, sha256: image.sha256, url: image.url} }]
       end
       {package_name: package, tracks: tracks, bundles: bundles, phone_screenshots: images,
-       countries: (countries.countries || []).map(&:country_code), rest_of_world: countries.rest_of_world,
+       countries: countries ? (countries.countries || []).map(&:country_code).sort : nil, rest_of_world: countries&.rest_of_world,
        state: "uncommitted-edit", edit_id: edit_id,
        note: "Staged changes in an existing edit; not a committed release"}
   end
 end
 
 class PlayReleaseResume
-  def self.validate(snapshot, package, code, sha256, images, rollout)
+  def self.validate(snapshot, package, code, sha256, images, rollout, track: "production")
     raise ArgumentError, "Edit belongs to another package" unless snapshot[:package_name] == package
     bundle = snapshot[:bundles].find { |b| b[:version_code].to_i == code.to_i }
     raise ArgumentError, "Staged AAB differs from the validated file" unless bundle && bundle[:sha256] == sha256
-    production = snapshot[:tracks].find { |t| t[:track] == "production" }
-    releases = production && production[:releases]
+    destination = snapshot[:tracks].find { |t| t[:track] == track }
+    releases = destination && destination[:releases]
     release = releases && releases.find { |r| (r[:version_codes] || []).map(&:to_i) == [code.to_i] }
-    raise ArgumentError, "Staged production release differs from the requested version/rollout" unless release && release[:status] == rollout[:release_status]
+    raise ArgumentError, "Staged track release differs from the requested version/rollout" unless release && release[:status] == rollout[:release_status]
     if rollout[:release_status] == "inProgress" && release[:user_fraction].to_f != rollout[:rollout].to_f
       raise ArgumentError, "Staged production fraction differs from the requested rollout"
     end
@@ -123,14 +129,48 @@ class PlayReleaseResume
 end
 
 class PlayReleaseUploader < Supply::Uploader
-  attr_accessor :contact_email
+  attr_accessor :contact_email, :allow_automatic_review
 
   private
 
   def client
     @client ||= PlayReleaseClient.make_from_config
     @client.contact_email = contact_email
+    @client.allow_automatic_review = allow_automatic_review
     @client.edit_status_path = File.join(ENV.fetch("PLAY_PROJECT_ROOT", Dir.pwd), "build/play-edit-status.json")
     @client
+  end
+end
+
+# Independent server verification. Successful commit and successful verification are distinct.
+class PlayReleaseVerification
+  def self.validate(before, after, package:, track:, code:, sha256:, images:, rollout: nil, unchanged_tracks: false)
+    raise ArgumentError, "Remote state is not committed" unless after[:state] == "committed"
+    raise ArgumentError, "Wrong package in remote snapshot" unless after[:package_name] == package
+    unless before[:countries] == after[:countries] && before[:rest_of_world] == after[:rest_of_world]
+      raise ArgumentError, "Country availability changed unexpectedly"
+    end
+    bundle = after[:bundles].find { |b| b[:version_code].to_i == code.to_i }
+    raise ArgumentError, "Remote AAB hash/version differs from the validated artifact" unless bundle && bundle[:sha256] == sha256
+    images.each do |locale, hashes|
+      actual = (after[:phone_screenshots][locale] || []).map { |i| i[:sha256] }
+      raise ArgumentError, "Remote screenshot order/hashes differ for #{locale}" unless actual == hashes
+    end
+    if track != "production"
+      old_production = before[:tracks].find { |t| t[:track] == "production" }
+      new_production = after[:tracks].find { |t| t[:track] == "production" }
+      raise ArgumentError, "Test upload unexpectedly changed production" unless old_production == new_production
+    end
+    if unchanged_tracks
+      raise ArgumentError, "Listing sync unexpectedly changed track releases" unless before[:tracks] == after[:tracks]
+    else
+      release = after[:tracks].find { |t| t[:track] == track }&.dig(:releases)&.find { |r| (r[:version_codes] || []).map(&:to_i) == [code.to_i] }
+      expected = rollout || {release_status: "draft"}
+      raise ArgumentError, "Remote track/version/status differs" unless release && release[:status] == expected[:release_status]
+      if release[:status] == "inProgress" && release[:user_fraction].to_f != expected[:rollout].to_f
+        raise ArgumentError, "Remote rollout differs from the approved fraction"
+      end
+    end
+    true
   end
 end

@@ -25,4 +25,6 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
       - name: Play commit policy tests
-        run: bundle exec ruby fastlane/test_play_client.rb
+        run: |
+          bundle exec ruby fastlane/test_play_client.rb
+          bundle exec ruby fastlane/test_lanes.rb

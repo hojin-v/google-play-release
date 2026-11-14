@@ -4,23 +4,30 @@ Reusable Android release preparation, signed AAB validation, Play listing synchr
 
 ## Use with an Android project
 
-Clone this repository beside the app. Configure `<app>/play/release.json` with package ID, Gradle tasks, artifact and metadata paths, contact details and Console bootstrap status. The preparation commands run in the app project; the toolkit works from any directory.
+Clone this repository beside the app. Configure `<app>/play/release.json` with package ID, Gradle tasks, artifact and metadata paths, contact details and Console bootstrap status. The preparation commands run in the app project; the toolkit works from any directory. Start a new app from [examples/release.json](examples/release.json) and run `doctor` to report missing setup without account access. Change the identity, variant, toolchain and device scenarios for that app; never copy another app’s declarations or signing credentials.
 
 ```bash
+google-play-release/bin/play-release --project ./your-app doctor
 google-play-release/bin/play-release --project ./your-app prepare --signing-config /private/signing.json
 google-play-release/bin/play-release --project ./your-app check --aab ./your-app/build/release.aab --store
 google-play-release/bin/play-release --project ./your-app package --aab ./your-app/app/build/outputs/bundle/playRelease/app-play-release.aab --store
 
 export PLAY_SERVICE_ACCOUNT_JSON=/private/service-account.json
 google-play-release/bin/play-fastlane --project ./your-app android verify_access
-google-play-release/bin/play-fastlane --project ./your-app android sync_listing aab:build/release.aab
+google-play-release/bin/play-fastlane --project ./your-app android sync_listing aab:build/release.aab acknowledge_shared_listing:true
 google-play-release/bin/play-fastlane --project ./your-app android draft aab:build/release.aab
-# Only after an explicit production release request:
-google-play-release/bin/play-fastlane --project ./your-app android release aab:build/release.aab rollout:1.0
+# Complete the pending review-<hash>.json with actual physical-device observations.
+# Only after checks pass and the user explicitly authorizes this production release:
+google-play-release/bin/play-release --project ./your-app approve \
+  --aab ./your-app/build/release.aab --evidence ./your-app/build/review.json \
+  --authorization 'Actual explicit production request from the user' --rollout 0.1 \
+  --output ./your-app/build/production-approval.json
+google-play-release/bin/play-fastlane --project ./your-app android release aab:build/release.aab \
+  rollout:0.1 evidence:build/review.json approval:build/production-approval.json
 google-play-release/bin/play-fastlane --project ./your-app android status output:build/play-status.json
 ```
 
-Python 3.11+, JDK 17, the Android SDK and the project's Gradle wrapper are required. Fastlane additionally needs Ruby/Bundler (`bundle install` in this repository). `PLAY_RUBY_ROOT` supports an existing portable local Ruby runtime. Signing and service account files stay outside Git.
+Python 3.11+, the project’s configured JDK (Java 21 when required by tests), the Android SDK and the project's Gradle wrapper are required. Fastlane additionally needs Ruby/Bundler (`bundle install` in this repository). `PLAY_RUBY_ROOT` supports an existing portable local Ruby runtime. Signing and service account files stay outside Git.
 
 ## Store preview automation
 
@@ -35,7 +42,9 @@ google-play-release/bin/play-screenshots --project ./your-app check
 
 The generator captures the entire selected frame, converts it to opaque 1080×1920 RGB PNG, and records source fingerprints and ordered image hashes in the configured manifest. `prepare` regenerates the images; store audits reject stale or changed images and extra old screenshots. Raw captures remain under the app's ignored `build/play-captures/` for visual review. `PLAY_CHROMIUM_EXECUTABLE` can select an existing compatible local Chromium. Browser previews are not real-device validation. Use explicit example labels for reconstructed system settings or notifications.
 
-If a commit fails, `build/play-edit-status.json` preserves the existing edit ID from the start of the upload. `status` inspects a still-active edit without opening another one and labels it **uncommitted**. After resolving permissions, `android resume aab:<same-validated-file> rollout:1.0` checks the package, uploaded AAB version/hash, production rollout and ordered screenshot hashes before retrying only the commit. A new edit would invalidate the old one; do not blindly rerun an upload. If Google explicitly reports an expired/deleted edit, read fresh committed state first and establish whether the version code is still available. CI saves the receipt alongside remote status artifacts.
+Local and CI mutations automatically save per-version `remote-before.json`, `remote-after.json`, and `submission-receipt.json`. They compare AAB version/hash, ordered screenshot hashes and country availability. A failed verification is reported separately from a successful API commit.
+
+If a commit fails, `build/play-edit-status.json` preserves the existing edit ID from the start of the upload. `status` inspects a still-active edit without opening another one and labels it **uncommitted**. After resolving permissions, `android resume aab:<same-validated-file> rollout:<approved-fraction> approval:<file> evidence:<file>` checks the package, uploaded AAB version/hash, production rollout and ordered screenshot hashes before retrying only the commit. A new edit would invalidate the old one; do not blindly rerun an upload. If Google explicitly reports an expired/deleted edit, read fresh committed state first and establish whether the version code is still available. CI saves the receipt alongside remote status artifacts.
 
 `verify_access` and `status` run before local bootstrap is confirmed, so they can establish actual authentication, package permissions and remote track state. Do not infer an API restriction from the local flag alone. Mutating lanes warn when bootstrap is unconfirmed and let the actual API establish package/upload readiness; they do not mark bootstrap complete or waive Console-only signing/legal requirements. For the first app, create it and save its first AAB in Play Console before API uploads when the API reports that the package is not registered. A draft is not a published test or production release. The [skill](skills/google-play-release/SKILL.md) and [workflow](skills/google-play-release/references/workflow.md) describe the full process.
 
@@ -51,7 +60,7 @@ google-play-release/bin/play-declarations --project ./your-app status --json
 
 The guided terminal interview has no default answers. It saves each explicit response in the app's `play/declarations.json`, retains skipped questions, resumes after interruption, and asks conditional follow-ups for data handling, accounts, restricted access, regulated features and foreground services. `answer --file /path/to/answers.json --source console` accepts a JSON object mapping question IDs to verified values; a batch is validated before saving. Sources distinguish user decisions, operator input, code inspection and actual Console values. Package checks prevent accidentally reusing another app's answers. Countries, pricing and target audience cannot be decided from code.
 
-Production `promote` runs `status --require-complete` before accessing Play. Missing facts stop promotion so the caller can collect answers; internal draft preparation remains available. Promotions use the same commit policy that refuses to cancel an existing review. Facts must be revisited when an app's features, SDKs or service operation change.
+Production `release`, `promote`, and `resume` require artifact-bound approval and real-device evidence, then run `status --require-complete` before accessing Play. Missing facts stop promotion so the caller can collect answers; internal draft preparation remains available. Promotions use the same commit policy that refuses to cancel an existing review. Facts must be revisited when an app's features, SDKs or service operation change.
 
 An agent should ask only for facts it cannot establish from this app's existing instructions or evidence, using the available interactive user-input tool. These questions do not submit forms or replace the current Console questionnaires, IARC rating, SDK/data audit, account testing requirements or policy review. No credentials belong in the answer file. Conditional features can require additional Console questions or evidence beyond these initial facts.
 
@@ -74,8 +83,18 @@ The current built-in recorder has no audio. It can prove actual UI/FGS lifecycle
 
 ## CI and deployment
 
-This repository's CI runs tooling tests without an Android account. App repositories check out a pinned tooling commit in their manually triggered Play workflow and supply their own Secrets. `prepare` builds artifacts; `draft` uploads an internal draft. Explicit `release` submits a new validated production AAB and listing together, while `promote` reuses an existing internal version without rebuilding. Both use an explicit rollout fraction and require completed app facts. Remote snapshots run before and after mutations, including upload errors. Neither a successful API commit nor a completed track proves review approval/public availability. Public tooling code does not require public app source or credentials.
-
 Country decisions accept explicit CLDR country codes or the single `ALL_AVAILABLE` token. This records the owner's intent without inventing a Console country list; actual country selection must still be verified from the Console/API snapshot.
 
-For an initial app that returns `Only releases with status draft may be created on draft app`, reuse its already uploaded bundle with `android promote version_code:NN from:internal to:production release_status:draft` (omit rollout). This saves a production draft, not a test/public rollout; finish the actual Console review submission separately. A failed draft commit can be retried against the same preserved edit with `android resume aab:<same-file> release_status:draft` after matching artifact/image validation. Do not reuse an active completed-release edit as a draft without reconciling it; retain its receipt and verify invalidation before opening a new edit.
+For an initial app that returns `Only releases with status draft may be created on draft app`, reuse its already uploaded bundle with `android promote aab:<same-file> version_code:NN from:internal to:production release_status:draft` (omit rollout). This saves a production draft, not a test/public rollout; complete the actual Console forms before requesting a production rollout. Saving this draft does not authorize delivery; moving beyond draft requires the artifact-bound production gate. A failed draft commit can be retried against the same preserved edit with `android resume aab:<same-file> release_status:draft` after matching artifact/image validation. Do not reuse an active completed-release edit as a draft without reconciling it; retain its receipt and verify invalidation before opening a new edit.
+
+This repository's CI runs tooling tests without an Android account. App repositories check out a pinned tooling commit in their manually triggered Play workflow and supply their own Secrets. `prepare` builds artifacts; `draft` uploads an internal draft. Explicit `release` submits a new validated production AAB and listing together, while `promote` requires an explicit destination track and reuses the matching uploaded AAB. Production requires passed app-specific physical tests, a successful preparation proof, completed facts, and approval bound to the exact app/version/AAB/APK/listing/config/rollout. A generic deploy request or successful test is not production authorization. Remote snapshots run before and after mutations, including upload errors. Neither a successful API commit nor a completed track proves review approval/public availability. Public tooling code does not require public app source or credentials.
+
+## Production safeguards and portability
+
+`prepare` creates `preparation.json` and a pending `review-<AAB hash>.json` in the version folder. Fill the latter from actual observations: each required scenario records the physical device, Android version/SDK, Play-variant installation, matching validation APK hash and result evidence. A different sideload/debug package, a pending scenario or an out-of-range device cannot satisfy the gate. Unit tests do not fill physical observations. `approve` only records an existing explicit user production request; it does not obtain consent or authenticate a person. Anyone able to forge all local records can bypass an operator-record gate; do not describe this as an independent security principal.
+
+CI reads `java_version` and `android_sdk_packages` from the app config. Production operations require `candidate_run_id`, `approval`, and `evidence`, download that run’s `play-release` artifact, and validate it without rebuilding. Local builds may use the same commands without a GitHub run. Configure the `google-play-production` environment’s required reviewers where the account/repository plan supports them; an environment name alone does not enforce review. Default operation is local `prepare`, default production rollout is 10%, and no success automatically promotes a test.
+
+Internal `draft` does not upload the shared listing/images/contact or change production binaries. It is not tester delivery or Google policy approval. `sync_listing` affects the shared listing even when naming a test track and requires `acknowledge_shared_listing:true`. If Google rejects the review-hold parameter, the edit stays pending by default. Retry only after explicit automatic-review authorization (`automatic_review:true` for the applicable test/listing operation), or production approval; an internal retry uses `android resume track:internal aab:<same-file> automatic_review:true` and preserves its original draft scope. Never silently reinterpret a test request as production.
+
+App-specific shipped-artifact validators belong in `artifact_checks` argument arrays. They run during preparation and pre-submission audit; failures block upload. Camera/ADB rules, screenshots, privacy copy and device scenarios stay in each app. See [portability findings and regression coverage](docs/PORTABILITY_AND_RELEASE_SAFETY.md) and [new-app setup](examples/README.md).

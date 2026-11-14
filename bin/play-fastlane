@@ -8,12 +8,17 @@ if [[ "${1:-}" == '--project' ]]; then
   shift 2
 fi
 export PLAY_PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
-test -f "$PLAY_PROJECT_ROOT/play/release.json"
+if [[ "${1:-}" != '--test-client' && "${1:-}" != '--test-lanes' && ! -f "$PLAY_PROJECT_ROOT/play/release.json" ]]; then
+  echo 'Missing app play/release.json. Run play-release --project <app> doctor and use examples/release.json.' >&2
+  exit 1
+fi
 cd "$TOOL_ROOT"
 export FASTLANE_SKIP_UPDATE_CHECK=1
 COMMAND=(fastlane "$@")
 if [[ "${1:-}" == '--test-client' ]]; then
   COMMAND=(ruby fastlane/test_play_client.rb)
+elif [[ "${1:-}" == '--test-lanes' ]]; then
+  COMMAND=(ruby fastlane/test_lanes.rb)
 fi
 
 if command -v bundle >/dev/null 2>&1 && command -v ruby >/dev/null 2>&1; then

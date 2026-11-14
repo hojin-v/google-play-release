@@ -1,4 +1,5 @@
 require "json"
+require "time"
 require "digest"
 require "shellwords"
 require "googleauth"
@@ -20,43 +21,120 @@ def play_credentials(bootstrap: true)
   path
 end
 
-def audit_play_release(aab)
-  JSON.parse(sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/release.py"), "--project", ROOT,
-                "check", "--aab", aab, "--store", log: false))
+def audit_play_release(aab, store: true)
+  args = ["python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/release.py"), "--project", ROOT,
+          "check", "--aab", aab]
+  args << "--store" if store
+  JSON.parse(sh(*args, log: false))
 end
 
 def upload_play_release(**options)
   Dir.chdir(ROOT) do
+    automatic_review = options.delete(:allow_automatic_review) == true
+    update_contact = options.delete(:update_contact) != false
     Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, options)
     uploader = PlayReleaseUploader.new
-    uploader.contact_email = CONFIG.fetch("contact_email")
+    uploader.contact_email = CONFIG.fetch("contact_email") if update_contact
+    uploader.allow_automatic_review = automatic_review
     uploader.perform_upload
   end
+end
+
+
+def read_play_snapshot(credentials)
+  service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
+  service.authorization = credentials
+  snapshot = nil
+  receipt_path = File.join(ROOT, "build/play-edit-status.json")
+  if File.file?(receipt_path)
+    receipt = JSON.parse(File.read(receipt_path))
+    if receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
+      begin
+        service.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
+        snapshot = PlayReleaseSnapshot.read_existing(service, CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
+      rescue Google::Apis::ClientError => error
+        raise unless PlayReleaseSnapshot.invalid_edit?(error)
+      end
+    end
+  end
+  snapshot ||= PlayReleaseSnapshot.read(service, CONFIG.fetch("package_name"))
+  snapshot
+end
+
+def expected_phone_images
+  Dir.glob(File.join(ROOT, CONFIG.fetch("metadata_path"), "*", "images/phoneScreenshots")).to_h do |directory|
+    [File.basename(File.dirname(File.dirname(directory))), Dir.glob(File.join(directory, "*.png")).sort.map { |file| Digest::SHA256.file(file).hexdigest }]
+  end
+end
+
+def production_gate(options)
+  UI.user_error!("Production blocked: provide approval: and evidence: for the reviewed test candidate") unless options[:approval] && options[:evidence]
+  aab = File.expand_path(options.fetch(:aab), ROOT)
+  args = ["python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/release.py"), "--project", ROOT,
+          "production-check", "--aab", aab, "--approval", File.expand_path(options[:approval], ROOT),
+          "--evidence", File.expand_path(options[:evidence], ROOT), "--rollout", options.fetch(:rollout, "0.1").to_s]
+  JSON.parse(sh(*args, log: false))
+end
+
+def with_play_transaction(credentials_path, operation, audit, track: "production", rollout: nil, preserve_listing: false)
+  credentials = File.open(credentials_path) { |file| Google::Auth::ServiceAccountCredentials.make_creds(
+    json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher") }
+  folder = File.join(ROOT, CONFIG.fetch("output_path"), "#{audit.fetch('version_name')}-#{audit.fetch('version_code')}")
+  FileUtils.mkdir_p(folder)
+  before = read_play_snapshot(credentials)
+  File.write(File.join(folder, "remote-before.json"), JSON.pretty_generate(before) + "\n")
+  if before[:state] != "committed" && !operation.start_with?("resume")
+    UI.user_error!("An unfinished edit exists. Inspect status and resume the same file; do not overwrite it.")
+  end
+  if ["release", "draft"].include?(operation)
+    maximum = before[:bundles].map { |b| b[:version_code].to_i }.max || 0
+    UI.user_error!("Use a new versionCode; this code is uploaded already. Promote or resume the existing artifact.") if audit.fetch("version_code").to_i <= maximum
+  end
+  edit_path = File.join(ROOT, "build/play-edit-status.json")
+  edit_before = File.file?(edit_path) ? File.read(edit_path) : nil
+  error = nil
+  after = nil
+  begin
+    yield(before)
+  rescue StandardError => e
+    error = e
+  ensure
+    begin
+      after = read_play_snapshot(credentials)
+      File.write(File.join(folder, "remote-after.json"), JSON.pretty_generate(after) + "\n")
+    rescue StandardError => e
+      error ||= e
+    end
+    verified = false
+    unless error
+      begin
+        PlayReleaseVerification.validate(before, after, package: CONFIG.fetch("package_name"), track: track,
+          code: audit.fetch("version_code"), sha256: audit.fetch("aab_sha256"), images: (preserve_listing || ["draft", "resume_draft"].include?(operation)) ? before[:phone_screenshots].transform_values { |rows| rows.map { |r| r[:sha256] } } : expected_phone_images,
+          rollout: rollout, unchanged_tracks: operation == "sync_listing")
+        verified = true
+      rescue StandardError => e
+        error = e
+      end
+    end
+    edit_receipt = File.join(ROOT, "build/play-edit-status.json")
+    committed = File.file?(edit_receipt) && File.read(edit_receipt) != edit_before && JSON.parse(File.read(edit_receipt))["status"] == "committed"
+    receipt = {package_name: CONFIG.fetch("package_name"), operation: operation, track: track,
+      version_code: audit.fetch("version_code"), version_name: audit.fetch("version_name"),
+      aab_sha256: audit.fetch("aab_sha256"), release_status: rollout&.dig(:release_status) || (operation == "draft" ? "draft" : nil), api_commit_succeeded: !!committed, remote_verified: verified,
+      review_approval_verified: false, public_update_verified: false, checked_at: Time.now.utc.iso8601,
+      error: error&.message, retry: error ? "Read status; never blindly upload again. Preserve the edit and use resume when valid." : nil}
+    File.write(File.join(folder, "submission-receipt.json"), JSON.pretty_generate(receipt) + "\n")
+  end
+  raise error if error
 end
 
 platform :android do
   desc "Read committed tracks, AAB hashes, screenshot order and countries; does not commit changes"
   lane :status do |options|
-    # Inspect the real API even before local bootstrap has been confirmed.
     File.open(play_credentials(bootstrap: false)) do |file|
       credentials = Google::Auth::ServiceAccountCredentials.make_creds(
         json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher")
-      service = Google::Apis::AndroidpublisherV3::AndroidPublisherService.new
-      service.authorization = credentials
-      snapshot = nil
-      receipt_path = File.join(ROOT, "build/play-edit-status.json")
-      if File.file?(receipt_path)
-        receipt = JSON.parse(File.read(receipt_path))
-        if receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
-          begin
-            service.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
-            snapshot = PlayReleaseSnapshot.read_existing(service, CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
-          rescue Google::Apis::ClientError => error
-            raise unless PlayReleaseSnapshot.invalid_edit?(error)
-          end
-        end
-      end
-      snapshot ||= PlayReleaseSnapshot.read(service, CONFIG.fetch("package_name"))
+      snapshot = read_play_snapshot(credentials)
       output = File.expand_path(options.fetch(:output, "build/play-remote-status.json"), ROOT)
       FileUtils.mkdir_p(File.dirname(output))
       File.write(output, JSON.pretty_generate(snapshot) + "\n")
@@ -70,29 +148,44 @@ platform :android do
 
   desc "Revalidate and commit an existing production edit after a permission/network failure; never reupload"
   lane :resume do |options|
+    track = options.fetch(:track, "production")
+    delivery = track == "production" && options[:release_status] != "draft"
+    audit = delivery ? production_gate(options) : audit_play_release(File.expand_path(options.fetch(:aab), ROOT), store: false)
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
-    audit = audit_play_release(aab)
-    rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status])
-    sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
-       "--project", ROOT, "status", "--require-complete")
+    rollout = delivery ? PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status]) : PlayReleaseRollout.promotion_options(options[:rollout], release_status: "draft")
+    if delivery
+      sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
+         "--project", ROOT, "status", "--require-complete")
+    end
     receipt_path = File.join(ROOT, "build/play-edit-status.json")
     receipt = JSON.parse(File.read(receipt_path))
     UI.user_error!("No matching uncommitted edit receipt") unless receipt["package_name"] == CONFIG.fetch("package_name") && receipt["status"] != "committed"
     Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options,
-      {package_name: CONFIG.fetch("package_name"), json_key: credentials, changes_not_sent_for_review: rollout[:release_status] == "draft"})
+      {package_name: CONFIG.fetch("package_name"), json_key: credentials, changes_not_sent_for_review: !delivery})
     client = PlayReleaseClient.make_from_config
     edit = client.client.get_edit(CONFIG.fetch("package_name"), receipt.fetch("edit_id"))
     snapshot = PlayReleaseSnapshot.read_existing(client.client, CONFIG.fetch("package_name"), edit.id)
     images = Dir.glob(File.join(ROOT, CONFIG.fetch("metadata_path"), "*", "images/phoneScreenshots")).to_h do |directory|
       [File.basename(File.dirname(File.dirname(directory))), Dir.glob(File.join(directory, "*.png")).sort.map { |file| Digest::SHA256.file(file).hexdigest }]
     end
-    PlayReleaseResume.validate(snapshot, CONFIG.fetch("package_name"), audit.fetch("version_code"), audit.fetch("aab_sha256"), images, rollout)
+    if !delivery
+      folder = File.join(ROOT, CONFIG.fetch("output_path"), "#{audit.fetch('version_name')}-#{audit.fetch('version_code')}")
+      saved = JSON.parse(File.read(File.join(folder, "submission-receipt.json")))
+      original = JSON.parse(File.read(File.join(folder, "remote-before.json")))
+      UI.user_error!("Only an original saved draft can resume without production approval") unless ["draft", "promote"].include?(saved["operation"]) && saved["release_status"] == "draft" && saved["track"] == track
+      images = original.fetch("phone_screenshots").transform_values { |rows| rows.map { |r| r.fetch("sha256") } }
+      previous = original.fetch("tracks").find { |t| t["track"] == "production" }
+      staged = JSON.parse(JSON.generate(snapshot.fetch(:tracks))).find { |t| t["track"] == "production" }
+      UI.user_error!("Internal resume cannot change staged production") unless (track == "production" || previous == staged) && original["countries"] == snapshot[:countries] && original["rest_of_world"] == snapshot[:rest_of_world]
+    end
+    PlayReleaseResume.validate(snapshot, CONFIG.fetch("package_name"), audit.fetch("version_code"), audit.fetch("aab_sha256"), images, rollout, track: track)
     client.current_package_name = CONFIG.fetch("package_name")
     client.current_edit = edit
-    client.contact_email = CONFIG.fetch("contact_email")
+    client.contact_email = CONFIG.fetch("contact_email") if delivery
+    client.allow_automatic_review = delivery || options[:automatic_review].to_s == "true"
     client.edit_status_path = receipt_path
-    client.commit_current_edit!
+    with_play_transaction(credentials, delivery ? "resume" : "resume_draft", audit, track: track, rollout: rollout, preserve_listing: !delivery) { client.commit_current_edit! }
   end
 
   desc "Check service account authentication and package access without uploading"
@@ -118,75 +211,106 @@ platform :android do
   lane :draft do |options|
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
-    audit_play_release(aab)
-    upload_play_release(
-      package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
-      skip_upload_apk: true,
-      metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
-      track: "internal", release_status: "draft",
-      changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
-      sync_image_upload: true
-    )
+    audit = audit_play_release(aab)
+    with_play_transaction(credentials, "draft", audit, track: "internal") do
+      upload_play_release(
+        allow_automatic_review: options[:automatic_review].to_s == "true",
+        update_contact: false,
+        skip_upload_metadata: true, skip_upload_images: true, skip_upload_screenshots: true,
+        package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
+        skip_upload_apk: true,
+        metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+        track: "internal", release_status: "draft",
+        changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
+        sync_image_upload: true
+      )
+    end
   end
 
   desc "Explicit production update: upload the validated AAB and listing in one edit"
   lane :release do |options|
+    audit = production_gate(options)
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
     rollout = PlayReleaseRollout.options(options.fetch(:rollout, "0.1"))
-    audit_play_release(aab)
     sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
        "--project", ROOT, "status", "--require-complete")
-    upload_play_release(
-      package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
-      skip_upload_apk: true, metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
-      track: "production", **rollout,
-      changes_not_sent_for_review: false, rescue_changes_not_sent_for_review: false,
-      sync_image_upload: true
-    )
+    with_play_transaction(credentials, "release", audit, rollout: rollout) do
+      upload_play_release(
+        allow_automatic_review: true,
+        package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab,
+        skip_upload_apk: true, metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+        track: "production", **rollout,
+        changes_not_sent_for_review: false, rescue_changes_not_sent_for_review: false,
+        sync_image_upload: true
+      )
+    end
   end
 
   desc "Sync listing for a manually uploaded release, without uploading its AAB again"
   lane :sync_listing do |options|
+    UI.user_error!("Listing changes are shared across tracks; acknowledge_shared_listing:true is required") unless options[:acknowledge_shared_listing].to_s == "true"
     credentials = play_credentials
     aab = File.expand_path(options.fetch(:aab), ROOT)
-    code = audit_play_release(aab).fetch("version_code")
+    audit = audit_play_release(aab)
+    code = audit.fetch("version_code")
     track = options.fetch(:track, "internal")
     codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: track)
     UI.user_error!("Save the manually uploaded release on the requested track first") unless codes.map(&:to_i).include?(code)
-    upload_play_release(
-      package_name: CONFIG.fetch("package_name"), json_key: credentials,
-      track: track, version_code: code,
-      skip_upload_aab: true, skip_upload_apk: true,
-      metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
-      changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
-      sync_image_upload: true
-    )
+    with_play_transaction(credentials, "sync_listing", audit, track: track) do
+      upload_play_release(
+        allow_automatic_review: options[:automatic_review].to_s == "true",
+        package_name: CONFIG.fetch("package_name"), json_key: credentials,
+        track: track, version_code: code,
+        skip_upload_aab: true, skip_upload_apk: true,
+        metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
+        changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
+        sync_image_upload: true
+      )
+    end
   end
 
   desc "Promote a tested version code, without rebuilding or uploading it"
   lane :promote do |options|
     code = Integer(options.fetch(:version_code))
     from = options.fetch(:from, "internal")
-    to = options.fetch(:to, "production")
-    rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status],
-                                                  default: to == "production" ? "0.1" : "1.0")
+    UI.user_error!("Promotion requires an explicit to: track; production is never inferred") unless options[:to]
+    to = options.fetch(:to)
+    delivery = to == "production" && options[:release_status] != "draft"
+    audit = delivery ? production_gate(options) : audit_play_release(File.expand_path(options.fetch(:aab), ROOT), store: options[:release_status] != "draft")
+    UI.user_error!("Local artifact version differs from requested promotion") unless audit.fetch("version_code").to_i == code
+    rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status], default: to == "production" ? "0.1" : "1.0")
     UI.user_error!("Source and destination tracks must differ") if from == to
-    if to == "production"
+    if delivery
       sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
          "--project", ROOT, "status", "--require-complete")
     end
     credentials = play_credentials
     codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: from)
     UI.user_error!("Requested version is not on source track") unless codes.map(&:to_i).include?(code)
-    upload_play_release(
-      package_name: CONFIG.fetch("package_name"), json_key: credentials,
-      track: from, track_promote_to: to, version_code: code,
-      **rollout,
-      skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: true,
-      skip_upload_images: true, skip_upload_screenshots: true, skip_upload_changelogs: true,
-      changes_not_sent_for_review: rollout[:release_status] == "draft",
-      rescue_changes_not_sent_for_review: false
-    )
+    with_play_transaction(credentials, "promote", audit, track: to, rollout: rollout, preserve_listing: rollout[:release_status] == "draft") do |before|
+      bundle = before[:bundles].find { |b| b[:version_code].to_i == code }
+      UI.user_error!("Uploaded source AAB differs from the tested local artifact") unless bundle && bundle[:sha256] == audit.fetch("aab_sha256")
+      if rollout[:release_status] != "draft"
+        expected_phone_images.each do |locale, hashes|
+          UI.user_error!("Sync and review this listing before promotion") unless (before[:phone_screenshots][locale] || []).map { |i| i[:sha256] } == hashes
+        end
+      end
+      production = before[:tracks].find { |t| t[:track] == "production" }
+      maximum = (production&.dig(:releases) || []).reject { |r| r[:status] == "draft" }.flat_map { |r| r[:version_codes] || [] }.map(&:to_i).max || 0
+      UI.user_error!("Cannot promote an older or already-production version") if to == "production" && code <= maximum
+      upload_play_release(
+        allow_automatic_review: delivery || options[:automatic_review].to_s == "true",
+        update_contact: delivery,
+        deactivate_on_promote: rollout[:release_status] != "draft",
+        package_name: CONFIG.fetch("package_name"), json_key: credentials,
+        track: from, track_promote_to: to, version_code: code,
+        **rollout,
+        skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: true,
+        skip_upload_images: true, skip_upload_screenshots: true, skip_upload_changelogs: true,
+        changes_not_sent_for_review: rollout[:release_status] == "draft" || to != "production",
+        rescue_changes_not_sent_for_review: false
+      )
+    end
   end
 end

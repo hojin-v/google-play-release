@@ -240,10 +240,57 @@ def audit(root, config, aab):
     return result, xml
 
 
+def matching_apk_issues(aab, apk):
+    """Catch testing the wrong flavor/output without requiring matching ZIP signatures."""
+    issues = []
+    with zipfile.ZipFile(aab) as bundle, zipfile.ZipFile(apk) as archive:
+        expected = {n.removeprefix("base/dex/"): bundle.read(n) for n in bundle.namelist() if n.startswith("base/dex/") and n.endswith(".dex")}
+        expected.update({n.removeprefix("base/"): bundle.read(n) for n in bundle.namelist() if n.startswith("base/lib/") and n.endswith(".so")})
+        actual = {n: archive.read(n) for n in archive.namelist() if re.fullmatch(r"classes[0-9]*\.dex", n) or (n.startswith("lib/") and n.endswith(".so"))}
+        if not expected or expected != actual:
+            issues.append("Validation APK code/native libraries differ from the AAB; rebuild the matching Play variant")
+    return issues
+
+
+def artifact_checks(root, config, aab, result):
+    output = root / config["output_path"] / f"{result['version_name']}-{result['version_code']}"
+    output.mkdir(parents=True, exist_ok=True)
+    values = {"aab": str(aab), "apk": str(root / config["apk_path"]), "output": str(output),
+              **{key: str(result[key]) for key in ("package_name", "version_name", "version_code")}}
+    for command in config.get("artifact_checks", []):
+        if not isinstance(command, list) or not command or not all(isinstance(a, str) for a in command):
+            raise ValueError("artifact_checks must be argument arrays, not shell strings")
+        run([arg.format_map(values) for arg in command], root, capture=True)
+
+
+def preparation_proof(root, config, result):
+    folder = root / config["output_path"] / f"{result['version_name']}-{result['version_code']}"
+    return folder / "preparation.json"
+
+
+def validate_preparation(root, config, result):
+    proof = json.loads(preparation_proof(root, config, result).read_text())
+    if (proof.get("status") != "passed" or proof.get("aab_sha256") != result["aab_sha256"]
+            or proof.get("apk_sha256") != sha(root / config["apk_path"])
+            or not config.get("gradle_tasks") or proof.get("gradle_tasks") != config["gradle_tasks"]):
+        raise ValueError("Missing or stale successful prepare record for this AAB/APK/build checks")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path.cwd())
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("doctor", help="read-only setup diagnostics; never contacts Google")
+    for name in ("review", "approve", "production-check"):
+        command = sub.add_parser(name)
+        command.add_argument("--aab", type=Path, required=True)
+        command.add_argument("--evidence", type=Path)
+        command.add_argument("--approval", type=Path)
+        command.add_argument("--rollout", default="0.1")
+        if name in ("review", "approve"):
+            command.add_argument("--output", type=Path, required=True)
+        if name == "approve":
+            command.add_argument("--authorization", required=True, help="actual explicit user production request, not inferred deploy/test intent")
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--signing-config", type=Path, default=os.environ.get("PLAY_SIGNING_CONFIG"),
                          help="private JSON file containing the four PLAY signing environment values")
@@ -255,7 +302,17 @@ def main():
     check.add_argument("--store", action="store_true", help="also require listing readiness")
     args = parser.parse_args()
     root = args.project.resolve()
-    config = json.loads((root / "play/release.json").read_text())
+    config_file = root / "play/release.json"
+    if not config_file.is_file() and args.command != "doctor":
+        raise ValueError("Missing play/release.json. Run doctor and start from the toolkit examples/release.json; do not copy another app's identity/decisions.")
+    config = json.loads(config_file.read_text()) if config_file.is_file() else {}
+    if args.command == "doctor":
+        from doctor import inspect
+        result = inspect(root, config)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["ready"] else 1
+    if args.command == "production-check" and (not args.approval or not args.evidence):
+        raise ValueError("Production blocked: --approval and --evidence are required; prepare/review a test candidate first")
     if args.command == "prepare":
         if args.signing_config:
             signing = json.loads(args.signing_config.read_text())
@@ -274,9 +331,27 @@ def main():
     else:
         aab = args.aab.resolve()
     result, xml = audit(root, config, aab)
-    if result["technical_issues"] or (getattr(args, "store", False) and result["store_issues"]):
+    apk = root / config["apk_path"]
+    if not apk.is_file():
+        result["technical_issues"].append("Matching validation APK is missing")
+    else:
+        result["technical_issues"] += matching_apk_issues(aab, apk)
+    needs_store = getattr(args, "store", False) or args.command in ("prepare", "review", "approve", "production-check")
+    if result["technical_issues"] or (needs_store and result["store_issues"]):
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1
+    artifact_checks(root, config, aab, result)
+    if args.command in ("review", "approve", "production-check"):
+        from release_gate import review, approve, validate_approval
+        validate_preparation(root, config, result)
+        if args.command == "review":
+            review(root, config, aab, result, args.output.resolve())
+        elif args.command == "approve":
+            if not args.evidence:
+                raise ValueError("--evidence is required")
+            approve(root, config, aab, result, args.evidence, args.authorization, args.rollout, args.output.resolve())
+        else:
+            validate_approval(root, config, aab, result, args.approval, args.evidence, args.rollout)
     if args.command in ("prepare", "package"):
         if config.get("build_tools_version"):
             sdk = Path(os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or (Path.home() / "android-sdk"))
@@ -287,8 +362,10 @@ def main():
             result["device_test_apk_signature_verified"] = True
         out = root / config["output_path"] / f'{result["version_name"]}-{result["version_code"]}'
         out.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(aab, out / "app.aab")
-        shutil.copy2(root / config["apk_path"], out / "device-test.apk")
+        if aab.resolve() != (out / "app.aab").resolve():
+            shutil.copy2(aab, out / "app.aab")
+        if (root / config["apk_path"]).resolve() != (out / "device-test.apk").resolve():
+            shutil.copy2(root / config["apk_path"], out / "device-test.apk")
         for src, dest in [(root / config["metadata_path"], out / "metadata")]:
             if dest.exists():
                 shutil.rmtree(dest)
@@ -311,6 +388,12 @@ def main():
         for src in config.get("source_artifacts", []):
             shutil.copytree(root / src, sources / Path(src).name,
                             ignore=shutil.ignore_patterns("build", ".cxx", ".git", "__pycache__"))
+        if args.command == "prepare":
+            from release_gate import now, review
+            proof = {"status": "passed", "completed_at": now(), "aab_sha256": result["aab_sha256"],
+                     "apk_sha256": sha(root / config["apk_path"]), "gradle_tasks": config["gradle_tasks"]}
+            preparation_proof(root, config, result).write_text(json.dumps(proof, indent=2) + "\n")
+            review(root, config, aab, result, out / f"review-{result['aab_sha256'][:12]}.json")
         files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")
         (out / "SHA256SUMS").write_text("".join(f"{sha(p)}  {p.relative_to(out)}\n" for p in files))
         archive = shutil.make_archive(str(out), "zip", root_dir=out.parent, base_dir=out.name)
@@ -323,6 +406,6 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile, struct.error, subprocess.CalledProcessError) as e:
+    except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile, struct.error, subprocess.CalledProcessError) as e:
         print(f"Release preparation failed: {e}", file=sys.stderr)
         sys.exit(1)

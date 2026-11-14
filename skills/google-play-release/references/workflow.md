@@ -29,6 +29,19 @@
 5. 스토어 등록정보, 공개 방침 URL, 국가/지역, 앱 콘텐츠 신고를 채운다. 앱 종류에 따라 추가 Console 항목이 생긴다. 체크리스트를 실제 Console 상태로 갱신한다.
 6. 2023-11-13 이후 생성된 개인 계정은 최소 12명, 연속 14일 비공개 테스트 후 프로덕션 접근을 신청해야 한다. 내부 테스트는 이 조건을 대신하지 않는다. 조직/다른 계정은 Console의 실제 조건을 따른다.
 
+## 테스트 후보와 정식 출시 안전장치
+
+최신 공통 절차는 [README](../../../README.md)와 [앱별 구성 예시](../../../examples/README.md)를 따른다. 모호한 배포 요청은 로컬 준비/테스트 후보로 처리한다. 현재 버전에 대한 명시적 정식 요청과 실기기 검증 없이는 프로덕션으로 전송하지 않는다. 기존 요청이 현재 작업에 명확히 적용되면 승인을 반복해서 묻지 않는다.
+
+1. `play-release --project <앱> doctor`로 누락된 JDK/SDK/서명/계정 설정을 확인한다. 결과에 자격증명 값은 포함하지 않는다.
+2. `prepare`로 설정된 단위 테스트·lint·서명 빌드·앱 전용 artifact_checks·AAB/APK 코드 일치·스토어 검사를 수행한다. 자동 생성되는 preparation.json은 빌드 증거이며 review-<hash>.json의 실기기 항목은 pending이다.
+3. 실제 Play variant를 설치해 요구한 구형/최신 기기·권한·업데이트 시나리오를 확인하고 기기/OS/SDK/설치 방식/실제 결과를 기록한다. 별도 GitHub sideload 패키지와 자동 테스트를 실제 Play 결과로 바꾸어 기록하지 않는다. 제조사 동작을 구현이 아닌 실제 결과로 확인한다.
+4. 정식 요청 범위가 명확할 때만 `approve --aab ... --evidence ... --authorization <실제 사용자 요청> --rollout 0.1 --output ...`로 기록한다. 이 명령 자체가 허가를 얻는 절차는 아니다. AAB/APK·버전·앱·메타데이터·구성·비율이 달라지면 기존 기록은 사용할 수 없다.
+5. `release`, `promote to:production`, `resume`는 동일 AAB와 `approval:<기록> evidence:<관측>`를 받는다. CI는 candidate_run_id의 산출물을 내려받으며 다시 빌드하지 않는다. 내부 초안은 공용 스토어 정보·연락처를 바꾸지 않는다. 스토어 문구 동기화에는 acknowledge_shared_listing:true가 별도로 필요하다.
+6. 공통 로컬/CI 경로에서 원격 전후 상태와 제출 영수증을 남기고 파일·이미지·국가·트랙을 대조한다. 검증 실패를 성공으로 덮지 않으며 Google 승인/공개는 별도다.
+
+기록은 앱별 실제 사실에 근거한 운영 장치다. 기록 파일을 위조할 수 있는 주체를 인증하는 장치는 아니며 GitHub 환경 심사자 설정은 사용 가능한 계정에서 추가로 적용한다. 단위 검사만으로 모든 기기의 오류나 Google 정책 문제를 보장하지 않는다.
+
 ## 반복 배포 자동화
 
 - 앱별 선언 사실은 `bin/play-declarations --project <app> questions --json`으로 확인한다. 사용자에게 새로 필요한 사실만 설명·선택지와 함께 소량씩 질문하고, 답변은 `answer --id ... --value ... --source user|code|console`으로 기록한다. 터미널에서는 `interview`가 질문·저장·재개를 수행한다. 다른 앱의 응답은 복사하지 않으며 미정 값은 자동 선택하지 않는다. 조건에 따라 데이터·계정 삭제·건강·금융·정부·접근·FGS 후속 질문이 생긴다. 프로덕션 승격은 `status --require-complete`를 통과해야 하지만 실제 Console 설문·IARC·심사 완료 여부는 별도로 확인한다. 기능·SDK·운영이 달라지면 저장한 사실도 갱신한다.
@@ -42,10 +55,10 @@
 - `bundle exec fastlane android verify_access`: OAuth와 실제 앱 패키지 조회를 구분해 검사한다. 키 인증 성공만으로 앱 권한·업로드 준비 완료를 판단하지 않는다.
 - 첫 수동 업로드로 이미 등록한 AAB를 다시 `draft`로 올리지 않는다. `bundle exec fastlane android sync_listing aab:/absolute/app.aab`으로 기존 트랙 버전의 문구·이미지·출시 노트만 동기화한다. 이 lane은 AAB를 재업로드하거나 출시 상태·rollout을 변경하지 않는다.
 - `bundle exec fastlane android draft aab:/absolute/app.aab`: 내부 트랙 draft와 등록정보 업로드. draft는 테스트 사용자 배포나 심사 제출이 완료됐다는 의미가 아니다. Console에서 신고를 마친 뒤 테스트 릴리스를 게시한다.
-- `bundle exec fastlane android release aab:/absolute/app.aab rollout:1.0`: 명시적으로 요청된 정식 업데이트를 검증된 AAB·등록정보·이미지와 함께 하나의 edit에서 프로덕션 100% 출시로 제출한다. 먼저 선언 사실을 검사하며 진행 중 심사를 취소하지 않는다. 내부 준비만 요청받았을 때 실행하지 않는다. 이미지와 AAB를 서로 다른 edit로 제출해 먼저 시작된 이미지 심사와 충돌하는 경로를 피할 수 있다.
-- `bundle exec fastlane android promote version_code:NN from:internal to:production rollout:0.1`: 테스트한 특정 코드를 10% 프로덕션 출시로 승격. 사용자의 실제 출시 요청과 계정의 프로덕션 접근이 있을 때 실행한다. 동일 AAB를 다시 빌드하거나 업로드하지 않는다.
+- `bundle exec fastlane android release aab:/absolute/app.aab rollout:0.1 approval:/absolute/approval.json evidence:/absolute/review.json`: 명시적으로 요청된 정식 업데이트를 검증된 AAB·등록정보·이미지와 함께 하나의 edit에서 프로덕션 100% 출시로 제출한다. 먼저 선언 사실을 검사하며 진행 중 심사를 취소하지 않는다. 내부 준비만 요청받았을 때 실행하지 않는다. 이미지와 AAB를 서로 다른 edit로 제출해 먼저 시작된 이미지 심사와 충돌하는 경로를 피할 수 있다.
+- `bundle exec fastlane android promote aab:/absolute/app.aab version_code:NN from:internal to:production rollout:0.1 approval:/absolute/approval.json evidence:/absolute/review.json`: 테스트한 특정 코드를 10% 프로덕션 출시로 승격. 사용자의 실제 출시 요청과 계정의 프로덕션 접근이 있을 때 실행한다. 동일 AAB를 다시 빌드하거나 업로드하지 않는다.
 - `bundle exec fastlane android status output:build/play-status.json`: 임시 edit에서 트랙·AAB 해시·언어별 이미지 순서/해시·국가를 조회하고 edit를 폐기한다. 변경 전후 및 오류 후에 실행해 중복 업로드를 피한다. API의 `completed`와 공개·심사 승인은 구분한다.
-- 저장에 실패한 기존 edit가 있으면 `status`는 그 edit를 유지하며 **uncommitted-edit**라고 구분해 읽는다. 새 edit는 기존 작업을 무효화하므로 임의로 생성하지 않는다. 권한 해결 후 `resume aab:/absolute/app.aab rollout:1.0`이 같은 AAB 버전·해시·프로덕션 상태·이미지 순서를 검사하고 commit만 재시도한다. 만료/삭제를 명시적으로 확인한 경우에만 새 상태를 읽고 버전 사용 여부를 판단한다. CI는 업로드 시작 시부터 기록한 `play-edit-status.json`도 보관한다.
+- 저장에 실패한 기존 edit가 있으면 `status`는 그 edit를 유지하며 **uncommitted-edit**라고 구분해 읽는다. 새 edit는 기존 작업을 무효화하므로 임의로 생성하지 않는다. 권한 해결 후 `resume aab:/absolute/app.aab rollout:0.1 approval:/absolute/approval.json evidence:/absolute/review.json`이 같은 AAB 버전·해시·프로덕션 상태·이미지 순서를 검사하고 commit만 재시도한다. 만료/삭제를 명시적으로 확인한 경우에만 새 상태를 읽고 버전 사용 여부를 판단한다. CI는 업로드 시작 시부터 기록한 `play-edit-status.json`도 보관한다.
 - 업로드 오류 또는 네트워크 끊김 뒤에는 Console/트랙 버전을 먼저 확인한다. 성공 여부가 불명확한 업로드·commit을 무한 재시도하지 않는다. 수정 릴리스는 새 versionCode로 배포한다. 이전 versionCode를 낮춰 롤백할 수 없다.
 
 ## 최신 요건을 확인할 공식 출처
