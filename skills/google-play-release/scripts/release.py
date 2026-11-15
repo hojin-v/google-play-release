@@ -146,7 +146,7 @@ def png_info(path):
 
 def store_issues(root, config, version_code):
     issues = []
-    if config.get("screenshot_config"):
+    if config.get("screenshot_config") and config.get("sync_store_images", True):
         from screenshots import check as check_screenshots
         try:
             issues += check_screenshots(root)
@@ -272,7 +272,7 @@ def validate_preparation(root, config, result):
     proof = json.loads(preparation_proof(root, config, result).read_text())
     if (proof.get("status") != "passed" or proof.get("aab_sha256") != result["aab_sha256"]
             or proof.get("apk_sha256") != sha(root / config["apk_path"])
-            or not config.get("gradle_tasks") or proof.get("gradle_tasks") != config["gradle_tasks"]):
+            or not config.get("gradle_tasks") or proof.get("gradle_tasks") != config["gradle_tasks"] or proof.get("compilation_policy") != "fresh-nonincremental"):
         raise ValueError("Missing or stale successful prepare record for this AAB/APK/build checks")
 
 
@@ -324,9 +324,9 @@ def main():
             os.environ.update({key: signing[key] for key in keys})
         for command in config.get("preparation_commands", []):
             run(command, root)
-        if config.get("screenshot_config"):
+        if config.get("screenshot_config") and config.get("sync_store_images", True):
             run([sys.executable, str(Path(__file__).with_name("screenshots.py")), "--project", str(root), "generate"], root)
-        run([str(root / "gradlew"), "--no-daemon"] + config.get("gradle_args", []) + config["gradle_tasks"], root)
+        run([str(root / "gradlew"), "--no-daemon"] + config.get("gradle_args", []) + ["--no-build-cache", "--rerun-tasks", "-Pkotlin.incremental=false"] + config["gradle_tasks"], root)
         aab = root / config["bundle_path"]
     else:
         aab = args.aab.resolve()
@@ -336,6 +336,9 @@ def main():
         result["technical_issues"].append("Matching validation APK is missing")
     else:
         result["technical_issues"] += matching_apk_issues(aab, apk)
+    if args.command in ("approve", "production-check"):
+        from release_identity import production_identity_issues
+        result["technical_issues"] += production_identity_issues(root, config, apk, xml)
     needs_store = getattr(args, "store", False) or args.command in ("prepare", "review", "approve", "production-check")
     if result["technical_issues"] or (needs_store and result["store_issues"]):
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -391,7 +394,7 @@ def main():
         if args.command == "prepare":
             from release_gate import now, review
             proof = {"status": "passed", "completed_at": now(), "aab_sha256": result["aab_sha256"],
-                     "apk_sha256": sha(root / config["apk_path"]), "gradle_tasks": config["gradle_tasks"]}
+                     "apk_sha256": sha(root / config["apk_path"]), "gradle_tasks": config["gradle_tasks"], "compilation_policy": "fresh-nonincremental"}
             preparation_proof(root, config, result).write_text(json.dumps(proof, indent=2) + "\n")
             review(root, config, aab, result, out / f"review-{result['aab_sha256'][:12]}.json")
         files = sorted(p for p in out.rglob("*") if p.is_file() and p.name != "SHA256SUMS")

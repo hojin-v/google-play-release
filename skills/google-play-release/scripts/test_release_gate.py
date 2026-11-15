@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 from release_gate import approve, binding, review, validate_approval, digest
-from release import main, matching_apk_issues, artifact_checks, validate_preparation, preparation_proof
+from release import main, matching_apk_issues, artifact_checks, validate_preparation, preparation_proof, store_issues
 from doctor import inspect
 
 
@@ -118,10 +118,16 @@ class ReleaseGateTests(unittest.TestCase):
     def test_old_prepare_or_changed_build_tasks_cannot_approve(self):
         path = preparation_proof(self.root, self.config, self.audit);path.parent.mkdir(parents=True)
         path.write_text(json.dumps({'status': 'passed', 'aab_sha256': digest(self.aab),
-            'apk_sha256': digest(self.root / 'test.apk'), 'gradle_tasks': self.config['gradle_tasks']}))
+            'apk_sha256': digest(self.root / 'test.apk'), 'gradle_tasks': self.config['gradle_tasks'], 'compilation_policy': 'fresh-nonincremental'}))
         validate_preparation(self.root, self.config, self.audit)
         self.config['gradle_tasks'].append(':app:extraCheck')
         with self.assertRaisesRegex(ValueError, 'prepare'): validate_preparation(self.root, self.config, self.audit)
+
+    def test_preserved_images_do_not_require_regeneration_or_change_owner_selection(self):
+        self.config['screenshot_config'] = 'play/screenshots.json'
+        self.config['sync_store_images'] = False
+        with patch('screenshots.check', side_effect=AssertionError('must preserve existing assets')):
+            store_issues(self.root, self.config, 12)
 
     def test_new_app_without_config_gets_setup_report_instead_of_traceback(self):
         (self.root / 'play/release.json').unlink()

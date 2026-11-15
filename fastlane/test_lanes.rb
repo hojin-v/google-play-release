@@ -167,9 +167,17 @@ Dir.mktmpdir do |root|
   snapshots(harness, [candidate, promoted])
   harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", rollout: "1.0")
   check(uploaded[:skip_upload_metadata] && uploaded[:skip_upload_screenshots] && uploaded[:skip_upload_changelogs], "Default promotion keeps the existing listing")
+  harness.define_singleton_method(:sync_store_images?) { false }
+  owner_before = Marshal.load(Marshal.dump(before)); owner_before[:phone_screenshots] = {"ko-KR" => [{sha256: "owner-selected-image"}]}
+  owner_after = Marshal.load(Marshal.dump(after)); owner_after[:phone_screenshots] = owner_before[:phone_screenshots]
+  snapshots(harness, [owner_before, owner_after])
+  harness.lanes[:release].call(aab: "candidate.aab", rollout: "1.0")
+  check(uploaded[:skip_upload_images] && uploaded[:skip_upload_screenshots], "An image-preserving release must not re-add owner-deleted screenshots")
+  check(uploaded[:version_name] == audit["version_name"], "Release label comes from the audited bundle")
+  check(JSON.parse(File.read(output_path))["remote_verified"], "Verify the owner's actual image selection, not a local replacement")
   auth.alias_method(:make_creds, :original_make_creds_for_test)
 end
-puts "16 lane transaction and authorization cases passed (fake Publisher only)"
+puts "17 lane transaction and authorization cases passed (fake Publisher only)"
 
 workflow = YAML.load_file(File.join(__dir__, "../.github/workflows/android-play-release.yml"))
 steps = workflow.fetch("jobs").fetch("release").fetch("steps")
