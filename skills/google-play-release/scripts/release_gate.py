@@ -73,7 +73,8 @@ def validate_evidence(document, identity, config):
     by_id = {e["id"]: e for e in entries}
     for requirement in required_checks(config):
         item = by_id.get(requirement["id"], {})
-        if item.get("status") != "passed":
+        prior_accepted = item.get("status") == "accepted_prior_validation"
+        if item.get("status") != "passed" and not prior_accepted:
             raise ValueError(f"Physical-device check is not passed: {requirement['id']}")
         for field in ("device", "os", "evidence"):
             if not isinstance(item.get(field), str) or not item[field].strip():
@@ -85,6 +86,17 @@ def validate_evidence(document, identity, config):
             raise ValueError(f"{requirement['id']}: device SDK is outside the required compatibility range")
         if requirement.get("device_pattern") and not re.search(requirement["device_pattern"], item["device"]):
             raise ValueError(f"{requirement['id']}: wrong device family for this check")
+        if prior_accepted:
+            acceptance = item.get("user_acceptance", {})
+            prior = item.get("prior_artifact", {})
+            if acceptance.get("source") != "user" or any(not isinstance(acceptance.get(k), str) or not acceptance[k].strip() for k in ("authorization", "reason")):
+                raise ValueError(f"{requirement['id']}: explicit user acceptance of prior validation is required")
+            if prior.get("status") != "passed" or any(not isinstance(prior.get(k), str) or not prior[k].strip() for k in ("package_name", "version_name")):
+                raise ValueError(f"{requirement['id']}: identify the previously passed artifact")
+            actual = item.get("tested_apk_sha256", "")
+            if not re.fullmatch(r"[0-9a-f]{64}", actual) or prior.get("apk_sha256") != actual or not item.get("installation"):
+                raise ValueError(f"{requirement['id']}: record the actual prior APK and installation")
+            continue  # Explicit exception, never relabelled as a test of the current APK.
         if item.get("installation") not in ("play", "aab-derived", "play-variant-apk"):
             raise ValueError(f"{requirement['id']}: test the Play variant, not a separate sideload/debug app")
         # Even a Play-delivered installation must name the matching local validation APK.

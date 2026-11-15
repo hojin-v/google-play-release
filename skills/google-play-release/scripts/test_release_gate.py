@@ -141,4 +141,34 @@ class ReleaseGateTests(unittest.TestCase):
         self.assertEqual(before, sorted(str(p) for p in self.root.rglob('*')))
 
 
+    def prior_observation(self):
+        self.observed()
+        data = json.loads(self.evidence.read_text())
+        data['device_checks'][0].update(status='accepted_prior_validation', installation='sideload',
+            tested_apk_sha256='a' * 64, prior_artifact={'package_name': 'com.example.beta',
+                'version_name': '1.2.0-beta.1', 'apk_sha256': 'a' * 64, 'status': 'passed'},
+            user_acceptance={'source': 'user', 'authorization': 'Use completed phone APK validation without repeating the Play-file test.',
+                'reason': 'User accepts prior physical validation for this release; current-file coverage remains limited.'})
+        self.evidence.write_text(json.dumps(data))
+
+    def test_explicit_prior_acceptance_remains_an_exception_in_the_bound_record(self):
+        self.prior_observation(); self.authorize(); self.verify()
+        data = json.loads(self.evidence.read_text())
+        self.assertEqual('accepted_prior_validation', data['device_checks'][0]['status'])
+        self.assertNotEqual(data['device_checks'][0]['tested_apk_sha256'], data['artifact']['apk_sha256'])
+
+    def test_prior_validation_cannot_be_inferred_or_use_a_failed_or_unidentified_artifact(self):
+        for target, key, value in [('user_acceptance', 'source', 'code'), ('user_acceptance', 'authorization', ''),
+                                  ('prior_artifact', 'status', 'failed'), ('prior_artifact', 'apk_sha256', 'b' * 64)]:
+            with self.subTest(target=target, key=key):
+                self.prior_observation(); data = json.loads(self.evidence.read_text())
+                data['device_checks'][0][target][key] = value;self.evidence.write_text(json.dumps(data))
+                with self.assertRaises(ValueError): self.authorize()
+
+    def test_prior_acceptance_does_not_waive_device_or_os_requirements(self):
+        self.prior_observation(); data = json.loads(self.evidence.read_text())
+        data['device_checks'][0]['sdk'] = 30;self.evidence.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, 'compatibility range'): self.authorize()
+
+
 if __name__ == '__main__': unittest.main()

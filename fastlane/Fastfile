@@ -277,6 +277,11 @@ platform :android do
     UI.user_error!("Promotion requires an explicit to: track; production is never inferred") unless options[:to]
     to = options.fetch(:to)
     delivery = to == "production" && options[:release_status] != "draft"
+    include_listing = options[:include_listing].to_s == "true"
+    if include_listing
+      UI.user_error!("Listing promotion requires production delivery") unless delivery
+      UI.user_error!("Acknowledge shared listing changes with acknowledge_shared_listing:true") unless options[:acknowledge_shared_listing].to_s == "true"
+    end
     audit = delivery ? production_gate(options) : audit_play_release(File.expand_path(options.fetch(:aab), ROOT), store: options[:release_status] != "draft")
     UI.user_error!("Local artifact version differs from requested promotion") unless audit.fetch("version_code").to_i == code
     rollout = PlayReleaseRollout.promotion_options(options[:rollout], release_status: options[:release_status], default: to == "production" ? "0.1" : "1.0")
@@ -291,7 +296,7 @@ platform :android do
     with_play_transaction(credentials, "promote", audit, track: to, rollout: rollout, preserve_listing: rollout[:release_status] == "draft") do |before|
       bundle = before[:bundles].find { |b| b[:version_code].to_i == code }
       UI.user_error!("Uploaded source AAB differs from the tested local artifact") unless bundle && bundle[:sha256] == audit.fetch("aab_sha256")
-      if rollout[:release_status] != "draft"
+      if rollout[:release_status] != "draft" && !include_listing
         expected_phone_images.each do |locale, hashes|
           UI.user_error!("Sync and review this listing before promotion") unless (before[:phone_screenshots][locale] || []).map { |i| i[:sha256] } == hashes
         end
@@ -304,10 +309,11 @@ platform :android do
         update_contact: delivery,
         deactivate_on_promote: rollout[:release_status] != "draft",
         package_name: CONFIG.fetch("package_name"), json_key: credentials,
+        metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
         track: from, track_promote_to: to, version_code: code,
         **rollout,
-        skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: true,
-        skip_upload_images: true, skip_upload_screenshots: true, skip_upload_changelogs: true,
+        skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: !include_listing,
+        skip_upload_images: !include_listing, skip_upload_screenshots: !include_listing, skip_upload_changelogs: !include_listing,
         changes_not_sent_for_review: rollout[:release_status] == "draft" || to != "production",
         rescue_changes_not_sent_for_review: false
       )

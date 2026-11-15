@@ -144,9 +144,32 @@ Dir.mktmpdir do |root|
   rejected("omit rollout") do
     harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", release_status: "draft", rollout: "1.0")
   end
+  rejected("Acknowledge shared") do
+    harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", include_listing: "true")
+  end
+  rejected("production delivery") do
+    harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "beta", include_listing: "true", acknowledge_shared_listing: "true")
+  end
+  candidate = Marshal.load(Marshal.dump(before))
+  candidate[:bundles] << {version_code: 12, sha256: "candidate-hash"}
+  candidate[:tracks] << {track: "internal", releases: [{version_codes: ["12"], status: "draft"}]}
+  promoted = Marshal.load(Marshal.dump(candidate))
+  promoted[:tracks][0][:releases] = [{version_codes: ["12"], status: "completed"}]
+  gates = []
+  harness.define_singleton_method(:production_gate) { |options| gates << options; audit }
+  harness.define_singleton_method(:sh) { |*_, **_| "" }
+  snapshots(harness, [candidate, promoted])
+  harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", rollout: "1.0", include_listing: "true", acknowledge_shared_listing: "true")
+  check(gates.length == 1, "Combined listing promotion must retain the production artifact gate")
+  check(uploaded[:skip_upload_aab] && uploaded[:skip_upload_apk], "Promote the tested file without reupload")
+  check(!uploaded[:skip_upload_metadata] && !uploaded[:skip_upload_images] && !uploaded[:skip_upload_screenshots] && !uploaded[:skip_upload_changelogs], "Explicit combined promotion includes the approved listing and notes")
+  check(uploaded[:metadata_path] == File.join(root, config[:metadata_path]) && uploaded[:track_promote_to] == "production", "Use this app's listing in the same production edit")
+  snapshots(harness, [candidate, promoted])
+  harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", rollout: "1.0")
+  check(uploaded[:skip_upload_metadata] && uploaded[:skip_upload_screenshots] && uploaded[:skip_upload_changelogs], "Default promotion keeps the existing listing")
   auth.alias_method(:make_creds, :original_make_creds_for_test)
 end
-puts "12 lane transaction and authorization cases passed (fake Publisher only)"
+puts "16 lane transaction and authorization cases passed (fake Publisher only)"
 
 workflow = YAML.load_file(File.join(__dir__, "../.github/workflows/android-play-release.yml"))
 steps = workflow.fetch("jobs").fetch("release").fetch("steps")
