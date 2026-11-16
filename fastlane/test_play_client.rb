@@ -80,7 +80,10 @@ class SnapshotPublisher
   def list_edit_bundles(*) = OpenStruct.new(bundles: [OpenStruct.new(version_code: 51, sha256: "aab-hash")])
   def get_edit_countryavailability(*) = OpenStruct.new(countries: [OpenStruct.new(country_code: "KR")], rest_of_world: true)
   def list_edit_listings(*) = OpenStruct.new(listings: [OpenStruct.new(language: "ko-KR")])
-  def list_edit_images(*) = OpenStruct.new(images: [OpenStruct.new(id: "first", sha256: "hash-1"), OpenStruct.new(id: "second", sha256: "hash-2")])
+  def list_edit_images(_, _, _, type)
+    raise "Unsupported current Publisher image type" unless %w[phoneScreenshots icon featureGraphic tvBanner].include?(type)
+    OpenStruct.new(images: [OpenStruct.new(id: "first", sha256: "hash-1"), OpenStruct.new(id: "second", sha256: "hash-2")])
+  end
 end
 publisher = SnapshotPublisher.new
 snapshot = PlayReleaseSnapshot.read(publisher, "com.example.app")

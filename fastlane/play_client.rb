@@ -117,7 +117,8 @@ class PlayReleaseSnapshot
 end
 
 class PlayReleaseGraphics
-  TYPES = %w[icon featureGraphic promoGraphic tvBanner].freeze
+  # Current Publisher AppImageType enum; legacy promoGraphic is rejected by API.
+  TYPES = %w[icon featureGraphic tvBanner].freeze
 
   def self.validate(snapshot, expected)
     expected.each do |locale, types|
