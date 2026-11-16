@@ -175,9 +175,36 @@ Dir.mktmpdir do |root|
   check(uploaded[:skip_upload_images] && uploaded[:skip_upload_screenshots], "An image-preserving release must not re-add owner-deleted screenshots")
   check(uploaded[:version_name] == audit["version_name"], "Release label comes from the audited bundle")
   check(JSON.parse(File.read(output_path))["remote_verified"], "Verify the owner's actual image selection, not a local replacement")
+  # Explicit graphics replacement must not resurrect owner-deleted screenshots.
+  harness.define_singleton_method(:sync_store_graphics?) { true }
+  File.write(File.join(root, "play/metadata/ko-KR/images/icon.png"), "new-original-icon")
+  File.write(File.join(root, "play/metadata/ko-KR/images/featureGraphic.png"), "new-feature")
+  graphics = harness.expected_store_graphics
+  check(graphics == {"ko-KR" => {"icon" => [Digest::SHA256.hexdigest("new-original-icon")],
+    "featureGraphic" => [Digest::SHA256.hexdigest("new-feature")]}}, "Select only present non-screenshot graphics")
+  graphic_after = Marshal.load(Marshal.dump(owner_after))
+  graphic_after[:store_graphics] = graphics.transform_values { |types| types.transform_values { |hashes| hashes.map { |hash| {sha256: hash} } } }
+  snapshots(harness, [owner_before, graphic_after])
+  harness.lanes[:release].call(aab: "candidate.aab", rollout: "1.0")
+  check(!uploaded[:skip_upload_images] && uploaded[:skip_upload_screenshots], "Replace graphics while preserving screenshots")
+  check(JSON.parse(File.read(output_path))["expected_store_graphics"] == graphics, "Bind graphics hashes to the transaction receipt")
+  # Metadata-only sync must use the same split policy, with no AAB reupload.
+  snapshots(harness, [graphic_after, graphic_after])
+  harness.lanes[:sync_listing].call(aab: "candidate.aab", track: "production", acknowledge_shared_listing: "true")
+  check(!uploaded[:skip_upload_images] && uploaded[:skip_upload_screenshots] && uploaded[:skip_upload_aab], "Listing sync replaces graphics only")
+  snapshots(harness, [owner_before, owner_after])
+  rejected("Remote store graphic") { harness.lanes[:release].call(aab: "candidate.aab", rollout: "1.0") }
+  check(!JSON.parse(File.read(output_path))["remote_verified"], "Never report stale branding as verified")
+  graphic_promoted = Marshal.load(Marshal.dump(promoted))
+  graphic_promoted[:phone_screenshots] = owner_before[:phone_screenshots]
+  graphic_promoted[:store_graphics] = graphic_after[:store_graphics]
+  owner_candidate = Marshal.load(Marshal.dump(candidate)); owner_candidate[:phone_screenshots] = owner_before[:phone_screenshots]
+  snapshots(harness, [owner_candidate, graphic_promoted])
+  harness.lanes[:promote].call(aab: "candidate.aab", version_code: 12, from: "internal", to: "production", rollout: "1.0", include_listing: "true", acknowledge_shared_listing: "true")
+  check(!uploaded[:skip_upload_images] && uploaded[:skip_upload_screenshots], "Combined promotion honors explicit graphics-only replacement")
   auth.alias_method(:make_creds, :original_make_creds_for_test)
 end
-puts "17 lane transaction and authorization cases passed (fake Publisher only)"
+puts "21 lane transaction and authorization cases passed (fake Publisher only)"
 
 workflow = YAML.load_file(File.join(__dir__, "../.github/workflows/android-play-release.yml"))
 steps = workflow.fetch("jobs").fetch("release").fetch("steps")

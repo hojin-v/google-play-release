@@ -19,6 +19,7 @@ Read this project's release config and [workflow](references/workflow.md). Keep 
 
 - Production checks must reject prerelease names and inspect the shipped launcher bytecode for stale version literals; manifest metadata alone is insufficient. Keep fresh nonincremental preparation and the bound preparation proof enabled.
 - Honor `sync_store_images:false` in the app config: preserve the owner’s remote selection, skip screenshot regeneration and image uploads, and compare before/after images. Do not re-add images the owner removed in Console from an older local set.
+- An explicit icon/feature-graphic replacement can opt into `sync_store_graphics:true` while keeping `sync_store_images:false`. This updates the present non-screenshot graphics only and verifies their remote hashes; it does not authorize screenshot replacement or remove the shared-listing acknowledgement requirement. Default graphics behavior still inherits `sync_store_images`.
 
 ## Workflow
 

@@ -80,7 +80,22 @@ def sync_store_images?
   CONFIG.fetch("sync_store_images", true) == true
 end
 
-def with_play_transaction(credentials_path, operation, audit, track: "production", rollout: nil, preserve_listing: false, preserve_images: false)
+def sync_store_graphics?
+  CONFIG.fetch("sync_store_graphics", sync_store_images?) == true
+end
+
+def expected_store_graphics
+  return {} unless sync_store_graphics?
+  Dir.glob(File.join(ROOT, CONFIG.fetch("metadata_path"), "*", "images")).to_h do |directory|
+    graphics = PlayReleaseGraphics::TYPES.to_h do |type|
+      paths = Dir.glob(File.join(directory, "#{type}.{png,jpg,jpeg}"), File::FNM_EXTGLOB).sort
+      [type, paths.map { |path| Digest::SHA256.file(path).hexdigest }]
+    end.reject { |_, hashes| hashes.empty? }
+    [File.basename(File.dirname(directory)), graphics]
+  end.reject { |_, graphics| graphics.empty? }
+end
+
+def with_play_transaction(credentials_path, operation, audit, track: "production", rollout: nil, preserve_listing: false, preserve_images: false, expected_graphics: {})
   credentials = File.open(credentials_path) { |file| Google::Auth::ServiceAccountCredentials.make_creds(
     json_key_io: file, scope: "https://www.googleapis.com/auth/androidpublisher") }
   folder = File.join(ROOT, CONFIG.fetch("output_path"), "#{audit.fetch('version_name')}-#{audit.fetch('version_code')}")
@@ -115,6 +130,7 @@ def with_play_transaction(credentials_path, operation, audit, track: "production
         PlayReleaseVerification.validate(before, after, package: CONFIG.fetch("package_name"), track: track,
           code: audit.fetch("version_code"), sha256: audit.fetch("aab_sha256"), images: (preserve_listing || preserve_images || ["draft", "resume_draft"].include?(operation)) ? before[:phone_screenshots].transform_values { |rows| rows.map { |r| r[:sha256] } } : expected_phone_images,
           rollout: rollout, unchanged_tracks: operation == "sync_listing")
+        PlayReleaseGraphics.validate(after, expected_graphics)
         verified = true
       rescue StandardError => e
         error = e
@@ -126,6 +142,7 @@ def with_play_transaction(credentials_path, operation, audit, track: "production
       version_code: audit.fetch("version_code"), version_name: audit.fetch("version_name"),
       aab_sha256: audit.fetch("aab_sha256"), release_status: rollout&.dig(:release_status) || (operation == "draft" ? "draft" : nil), api_commit_succeeded: !!committed, remote_verified: verified,
       review_approval_verified: false, public_update_verified: false, checked_at: Time.now.utc.iso8601,
+      expected_store_graphics: expected_graphics,
       error: error&.message, retry: error ? "Read status; never blindly upload again. Preserve the edit and use resume when valid." : nil}
     File.write(File.join(folder, "submission-receipt.json"), JSON.pretty_generate(receipt) + "\n")
   end
@@ -184,12 +201,15 @@ platform :android do
       UI.user_error!("Internal resume cannot change staged production") unless (track == "production" || previous == staged) && original["countries"] == snapshot[:countries] && original["rest_of_world"] == snapshot[:rest_of_world]
     end
     PlayReleaseResume.validate(snapshot, CONFIG.fetch("package_name"), audit.fetch("version_code"), audit.fetch("aab_sha256"), images, rollout, track: track)
+    submission_path = File.join(ROOT, CONFIG.fetch("output_path"), "#{audit.fetch('version_name')}-#{audit.fetch('version_code')}", "submission-receipt.json")
+    graphics = File.file?(submission_path) ? JSON.parse(File.read(submission_path)).fetch("expected_store_graphics", {}) : {}
+    PlayReleaseGraphics.validate(snapshot, graphics)
     client.current_package_name = CONFIG.fetch("package_name")
     client.current_edit = edit
     client.contact_email = CONFIG.fetch("contact_email") if delivery
     client.allow_automatic_review = delivery || options[:automatic_review].to_s == "true"
     client.edit_status_path = receipt_path
-    with_play_transaction(credentials, delivery ? "resume" : "resume_draft", audit, track: track, rollout: rollout, preserve_listing: !delivery) { client.commit_current_edit! }
+    with_play_transaction(credentials, delivery ? "resume" : "resume_draft", audit, track: track, rollout: rollout, preserve_listing: !delivery, expected_graphics: graphics) { client.commit_current_edit! }
   end
 
   desc "Check service account authentication and package access without uploading"
@@ -239,12 +259,12 @@ platform :android do
     rollout = PlayReleaseRollout.options(options.fetch(:rollout, "0.1"))
     sh("python3", File.join(TOOL_ROOT, "skills/google-play-release/scripts/declarations.py"),
        "--project", ROOT, "status", "--require-complete")
-    with_play_transaction(credentials, "release", audit, rollout: rollout, preserve_images: !sync_store_images?) do
+    with_play_transaction(credentials, "release", audit, rollout: rollout, preserve_images: !sync_store_images?, expected_graphics: expected_store_graphics) do
       upload_play_release(
         allow_automatic_review: true,
         package_name: CONFIG.fetch("package_name"), json_key: credentials, aab: aab, version_name: audit.fetch("version_name"),
         skip_upload_apk: true, metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
-        skip_upload_images: !sync_store_images?, skip_upload_screenshots: !sync_store_images?,
+        skip_upload_images: !sync_store_graphics?, skip_upload_screenshots: !sync_store_images?,
         track: "production", **rollout,
         changes_not_sent_for_review: false, rescue_changes_not_sent_for_review: false,
         sync_image_upload: true
@@ -262,13 +282,13 @@ platform :android do
     track = options.fetch(:track, "internal")
     codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: track)
     UI.user_error!("Save the manually uploaded release on the requested track first") unless codes.map(&:to_i).include?(code)
-    with_play_transaction(credentials, "sync_listing", audit, track: track, preserve_images: !sync_store_images?) do
+    with_play_transaction(credentials, "sync_listing", audit, track: track, preserve_images: !sync_store_images?, expected_graphics: expected_store_graphics) do
       upload_play_release(
         allow_automatic_review: options[:automatic_review].to_s == "true",
         package_name: CONFIG.fetch("package_name"), json_key: credentials,
         track: track, version_code: code,
         skip_upload_aab: true, skip_upload_apk: true,
-        skip_upload_images: !sync_store_images?, skip_upload_screenshots: !sync_store_images?,
+        skip_upload_images: !sync_store_graphics?, skip_upload_screenshots: !sync_store_images?,
         metadata_path: File.join(ROOT, CONFIG.fetch("metadata_path")),
         changes_not_sent_for_review: true, rescue_changes_not_sent_for_review: false,
         sync_image_upload: true
@@ -299,7 +319,7 @@ platform :android do
     credentials = play_credentials
     codes = google_play_track_version_codes(package_name: CONFIG.fetch("package_name"), json_key: credentials, track: from)
     UI.user_error!("Requested version is not on source track") unless codes.map(&:to_i).include?(code)
-    with_play_transaction(credentials, "promote", audit, track: to, rollout: rollout, preserve_listing: rollout[:release_status] == "draft", preserve_images: !sync_store_images?) do |before|
+    with_play_transaction(credentials, "promote", audit, track: to, rollout: rollout, preserve_listing: rollout[:release_status] == "draft", preserve_images: !sync_store_images?, expected_graphics: include_listing ? expected_store_graphics : {}) do |before|
       bundle = before[:bundles].find { |b| b[:version_code].to_i == code }
       UI.user_error!("Uploaded source AAB differs from the tested local artifact") unless bundle && bundle[:sha256] == audit.fetch("aab_sha256")
       if rollout[:release_status] != "draft" && !include_listing && sync_store_images?
@@ -319,7 +339,7 @@ platform :android do
         track: from, track_promote_to: to, version_code: code,
         **rollout,
         skip_upload_aab: true, skip_upload_apk: true, skip_upload_metadata: !include_listing,
-        skip_upload_images: !include_listing || !sync_store_images?, skip_upload_screenshots: !include_listing || !sync_store_images?, skip_upload_changelogs: !include_listing,
+        skip_upload_images: !include_listing || !sync_store_graphics?, skip_upload_screenshots: !include_listing || !sync_store_images?, skip_upload_changelogs: !include_listing,
         sync_image_upload: true,
         changes_not_sent_for_review: rollout[:release_status] == "draft" || to != "production",
         rescue_changes_not_sent_for_review: false

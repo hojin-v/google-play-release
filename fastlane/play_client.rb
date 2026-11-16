@@ -98,14 +98,34 @@ class PlayReleaseSnapshot
         raise unless error.status_code == 404 && tracks.none? { |t| t[:track] == "production" }
         countries = nil # A new app can have no production country resource yet.
       end
-      images = (service.list_edit_listings(package, edit_id).listings || []).to_h do |listing|
+      listings = service.list_edit_listings(package, edit_id).listings || []
+      images = listings.to_h do |listing|
         entries = service.list_edit_images(package, edit_id, listing.language, "phoneScreenshots").images || []
         [listing.language, entries.map { |image| {id: image.id, sha256: image.sha256, url: image.url} }]
       end
-      {package_name: package, tracks: tracks, bundles: bundles, phone_screenshots: images,
+      graphics = listings.to_h do |listing|
+        [listing.language, PlayReleaseGraphics::TYPES.to_h do |type|
+          entries = service.list_edit_images(package, edit_id, listing.language, type).images || []
+          [type, entries.map { |image| {id: image.id, sha256: image.sha256, url: image.url} }]
+        end]
+      end
+      {package_name: package, tracks: tracks, bundles: bundles, phone_screenshots: images, store_graphics: graphics,
        countries: countries ? (countries.countries || []).map(&:country_code).sort : nil, rest_of_world: countries&.rest_of_world,
        state: "uncommitted-edit", edit_id: edit_id,
        note: "Staged changes in an existing edit; not a committed release"}
+  end
+end
+
+class PlayReleaseGraphics
+  TYPES = %w[icon featureGraphic promoGraphic tvBanner].freeze
+
+  def self.validate(snapshot, expected)
+    expected.each do |locale, types|
+      types.each do |type, hashes|
+        rows = (snapshot[:store_graphics] || {}).dig(locale, type) || []
+        raise ArgumentError, "Remote store graphic differs for #{locale}/#{type}" unless rows.map { |row| row[:sha256] } == hashes
+      end
+    end
   end
 end
 
